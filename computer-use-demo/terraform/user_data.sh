@@ -44,14 +44,29 @@ cat > /home/ubuntu/start-claude.sh <<'EOF'
 
 export ANTHROPIC_API_KEY=${anthropic_api_key}
 
-# Run the Claude container
+# Clone the repository if it doesn't exist
+if [ ! -d "/home/ubuntu/anthropic-quickstarts" ]; then
+  echo "Cloning repository..."
+  git clone https://github.com/kirill-markin/anthropic-quickstarts.git /home/ubuntu/anthropic-quickstarts
+fi
+
+# Navigate to the computer-use-demo directory
+cd /home/ubuntu/anthropic-quickstarts/computer-use-demo
+
+# Build the Docker image locally
+echo "Building Docker image from local code..."
+docker build -t claude-computer-use:local .
+
+# Run the Claude container from the locally built image
 # Note: Using -d instead of -it for server deployment (runs in background)
 # Added --name for better server-side container management
 # IMPORTANT: The --restart unless-stopped flag is removed for debugging purposes
 # For production use, add the following line before --name claude:
 #     --restart unless-stopped \
+echo "Starting container from locally built image..."
 docker run \
     -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
+    -e ENABLE_THINKING=true \
     -v /home/ubuntu/.anthropic:/home/computeruse/.anthropic \
     -p 5900:5900 \
     -p 8501:8501 \
@@ -61,7 +76,7 @@ docker run \
     -e HEIGHT=1080 \
     -d \
     --name claude \
-    ghcr.io/anthropics/anthropic-quickstarts:computer-use-demo-latest
+    claude-computer-use:local
 EOF
 
 chmod +x /home/ubuntu/start-claude.sh
