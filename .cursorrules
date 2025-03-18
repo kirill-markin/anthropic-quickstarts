@@ -29,10 +29,10 @@ terraform apply
 
 # Connect to the instance (replace with your actual IP)
 # IMPORTANT: Create SSH tunnel for ALL required services (RECOMMENDED METHOD)
-ssh -i ~/.ssh/claude_aws_key -L 8080:localhost:8080 -L 6080:localhost:6080 -L 5900:localhost:5900 -L 8501:localhost:8501 -N ubuntu@<instance_public_ip>
+ssh -i ~/.ssh/claude_aws_key -L 8080:127.0.0.1:8080 -L 6080:127.0.0.1:6080 -L 5900:127.0.0.1:5900 -L 8501:127.0.0.1:8501 -N ubuntu@<instance_public_ip>
 
 # Simple tunnel (NOT RECOMMENDED - interface may not work properly)
-# ssh -L 8080:localhost:8080 -i ~/.ssh/claude_aws_key ubuntu@<instance_public_ip>
+# ssh -L 8080:127.0.0.1:8080 -i ~/.ssh/claude_aws_key ubuntu@<instance_public_ip>
 
 # Access the Claude interface
 # Open http://localhost:8080 in your browser
@@ -69,3 +69,24 @@ The Terraform deployment automatically sets up:
 - Container configuration with appropriate ports (8080, 8501, 6080, 5900)
 - Systemd service for auto-starting the container
 - API key configuration for Claude 
+
+## Additional Options
+
+### Enable Thinking Mode
+
+You can enable "Thinking" mode by setting the `ENABLE_THINKING` environment variable to `true`:
+
+```bash
+# For local Docker execution
+docker run \
+    -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
+    -e ENABLE_THINKING=true \
+    -v $HOME/.anthropic:/home/computeruse/.anthropic \
+    -p 5900:5900 \
+    -p 8501:8501 \
+    -p 6080:6080 \
+    -p 8080:8080 \
+    -it ghcr.io/anthropics/anthropic-quickstarts:computer-use-demo-latest
+```
+
+The Terraform deployment already includes this flag. 

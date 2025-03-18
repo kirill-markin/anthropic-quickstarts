@@ -43,7 +43,7 @@ terraform apply
 ssh -i your-private-key.pem ubuntu@<instance_public_ip>
 
 # IMPORTANT: Create SSH tunnel for ALL required services (RECOMMENDED METHOD)
-ssh -i your-private-key.pem -L 8080:localhost:8080 -L 6080:localhost:6080 -L 5900:localhost:5900 -L 8501:localhost:8501 -N ubuntu@<instance_public_ip>
+ssh -i your-private-key.pem -L 8080:127.0.0.1:8080 -L 6080:127.0.0.1:6080 -L 5900:127.0.0.1:5900 -L 8501:127.0.0.1:8501 -N ubuntu@<instance_public_ip>
 ```
 
 This command tunnels all necessary ports:
