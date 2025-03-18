@@ -45,6 +45,11 @@ cat > /home/ubuntu/start-claude.sh <<'EOF'
 export ANTHROPIC_API_KEY=${anthropic_api_key}
 
 # Run the Claude container
+# Note: Using -d instead of -it for server deployment (runs in background)
+# Added --name for better server-side container management
+# IMPORTANT: The --restart unless-stopped flag is removed for debugging purposes
+# For production use, add the following line before --name claude:
+#     --restart unless-stopped \
 docker run \
     -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
     -v /home/ubuntu/.anthropic:/home/computeruse/.anthropic \
@@ -55,7 +60,6 @@ docker run \
     -e WIDTH=1920 \
     -e HEIGHT=1080 \
     -d \
-    --restart unless-stopped \
     --name claude \
     ghcr.io/anthropics/anthropic-quickstarts:computer-use-demo-latest
 EOF

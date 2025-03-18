@@ -42,9 +42,17 @@ terraform apply
 # SSH directly to the instance
 ssh -i your-private-key.pem ubuntu@<instance_public_ip>
 
-# Create SSH tunnel for the Claude interface
-ssh -L 8080:localhost:8080 -i your-private-key.pem ubuntu@<instance_public_ip>
+# IMPORTANT: Create SSH tunnel for ALL required services (RECOMMENDED METHOD)
+ssh -i your-private-key.pem -L 8080:localhost:8080 -L 6080:localhost:6080 -L 5900:localhost:5900 -L 8501:localhost:8501 -N ubuntu@<instance_public_ip>
 ```
+
+This command tunnels all necessary ports:
+- 8080: Main Claude interface
+- 6080: noVNC web interface
+- 5900: VNC direct connection
+- 8501: Streamlit interface
+
+The `-N` flag prevents opening a shell and is useful for just forwarding ports.
 
 7. Access the Claude interface at http://localhost:8080
 
