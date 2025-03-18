@@ -155,6 +155,24 @@ docker run \
     -it ghcr.io/anthropics/anthropic-quickstarts:computer-use-demo-latest
 ```
 
+## Enable Thinking Mode
+
+You can enable "Thinking" mode by setting the `ENABLE_THINKING` environment variable to `true`:
+
+```bash
+docker run \
+    -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
+    -e ENABLE_THINKING=true \
+    -v $HOME/.anthropic:/home/computeruse/.anthropic \
+    -p 5900:5900 \
+    -p 8501:8501 \
+    -p 6080:6080 \
+    -p 8080:8080 \
+    -it ghcr.io/anthropics/anthropic-quickstarts:computer-use-demo-latest
+```
+
+This will automatically check the "Thinking Enabled" option in the UI when the container starts.
+
 We do not recommend sending screenshots in resolutions above [XGA/WXGA](https://en.wikipedia.org/wiki/Display_resolution_standards#XGA) to avoid issues related to [image resizing](https://docs.anthropic.com/en/docs/build-with-claude/vision#evaluate-image-size).
 Relying on the image resizing behavior in the API will result in lower model accuracy and slower performance than implementing scaling in your tools directly. The `computer` tool implementation in this project demonstrates how to scale both images and coordinates from higher resolutions to the suggested resolutions.
 

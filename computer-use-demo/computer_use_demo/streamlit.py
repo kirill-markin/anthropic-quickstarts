@@ -126,6 +126,9 @@ def setup_state():
         st.session_state.token_efficient_tools_beta = False
     if "in_sampling_loop" not in st.session_state:
         st.session_state.in_sampling_loop = False
+    # Check if thinking should be enabled via environment variable
+    if "thinking" not in st.session_state:
+        st.session_state.thinking = os.getenv("ENABLE_THINKING", "").lower() in ["true", "1", "yes"]
 
 
 def _reset_model():
@@ -214,7 +217,7 @@ async def main():
 
         st.number_input("Max Output Tokens", key="output_tokens", step=1)
 
-        st.checkbox("Thinking Enabled", key="thinking", value=False)
+        st.checkbox("Thinking Enabled", key="thinking", value=st.session_state.get("thinking", False))
         st.number_input(
             "Thinking Budget",
             key="thinking_budget",

@@ -1,0 +1,7 @@
+aws_region        = "us-west-2"
+aws_profile       = "default"    # Here you can specify your AWS profile name
+ami_id           = "ami-03f8acd418785369b" # Ubuntu 22.04 LTS in us-west-2
+
+# IMPORTANT: Replace these values with your actual credentials before running terraform apply
+ssh_public_key   = "ssh-rsa AAAA..." # Replace with your public key
+anthropic_api_key = "sk-ant-..." # Replace with your Anthropic API key 

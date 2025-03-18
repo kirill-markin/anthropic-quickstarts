@@ -1,0 +1,92 @@
+# Anthropic Quickstarts - Computer Use Demo
+
+## Repository Overview
+This repository contains quickstart projects for building applications with Anthropic's Claude. The main focus is on the **Computer Use Demo**, which demonstrates how Claude 3.5/3.7 Sonnet models can control a desktop computer.
+
+## Project Structure
+The primary directory we're working with is `computer-use-demo/`, which contains:
+- `terraform/`: Infrastructure as Code for deploying the demo on AWS EC2
+- Docker configuration for running the demo in a containerized environment
+
+## Terraform Deployment
+
+The `computer-use-demo/terraform/` directory contains a complete Terraform configuration for deploying Claude Computer Use Demo on AWS EC2. This allows you to run the demo in the cloud rather than locally.
+
+### Key Commands
+
+```bash
+# Navigate to the terraform directory
+cd computer-use-demo/terraform
+
+# Initialize Terraform
+terraform init
+
+# Preview changes before applying
+terraform plan
+
+# Deploy the infrastructure
+terraform apply
+
+# Connect to the instance (replace with your actual IP)
+# IMPORTANT: Create SSH tunnel for ALL required services (RECOMMENDED METHOD)
+ssh -i ~/.ssh/claude_aws_key -L 8080:127.0.0.1:8080 -L 6080:127.0.0.1:6080 -L 5900:127.0.0.1:5900 -L 8501:127.0.0.1:8501 -N ubuntu@<instance_public_ip>
+
+# Simple tunnel (NOT RECOMMENDED - interface may not work properly)
+# ssh -L 8080:127.0.0.1:8080 -i ~/.ssh/claude_aws_key ubuntu@<instance_public_ip>
+
+# Access the Claude interface
+# Open http://localhost:8080 in your browser
+
+# When finished, destroy all resources
+terraform destroy
+```
+
+This tunneling command forwards all necessary ports:
+- 8080: Main Claude interface
+- 6080: noVNC web interface
+- 5900: VNC direct connection
+- 8501: Streamlit interface
+
+The `-N` flag prevents opening a shell and is useful for just forwarding ports.
+
+### Resource Requirements
+
+- EC2 instance type: At least t3.2xlarge recommended (t3.large may be insufficient)
+- The deployment includes VPC, security groups, and other necessary network components
+- Estimated cost: ~$240-300/month (t3.2xlarge running 24/7) or ~$80-100/month with scheduled stops
+
+## Computer Use Demo Overview
+
+The Computer Use Demo provides an environment where Claude can:
+- Control a virtual desktop running in a Docker container
+- Access web browsers and other applications
+- Interact with a graphical interface
+- Execute commands
+
+The Terraform deployment automatically sets up:
+- EC2 instance with Ubuntu 22.04
+- Docker installation
+- Container configuration with appropriate ports (8080, 8501, 6080, 5900)
+- Systemd service for auto-starting the container
+- API key configuration for Claude 
+
+## Additional Options
+
+### Enable Thinking Mode
+
+You can enable "Thinking" mode by setting the `ENABLE_THINKING` environment variable to `true`:
+
+```bash
+# For local Docker execution
+docker run \
+    -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
+    -e ENABLE_THINKING=true \
+    -v $HOME/.anthropic:/home/computeruse/.anthropic \
+    -p 5900:5900 \
+    -p 8501:8501 \
+    -p 6080:6080 \
+    -p 8080:8080 \
+    -it ghcr.io/anthropics/anthropic-quickstarts:computer-use-demo-latest
+```
+
+The Terraform deployment already includes this flag. 
