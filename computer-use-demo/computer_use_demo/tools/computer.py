@@ -355,7 +355,7 @@ class ComputerTool20250124(BaseComputerTool, BaseAnthropicTool):
                 raise ToolError(f"{duration=} must be a number")
             if duration < 0:
                 raise ToolError(f"{duration=} must be non-negative")
-            if duration > 100:
+            if duration > 1000:
                 raise ToolError(f"{duration=} is too long.")
 
             if action == "hold_key":
