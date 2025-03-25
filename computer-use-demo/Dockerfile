@@ -3,10 +3,20 @@ FROM docker.io/ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive
 ENV DEBIAN_PRIORITY=high
 
-RUN apt-get update && \
-    apt-get -y upgrade && \
-    apt-get -y install \
-    # UI Requirements
+# Fix for Hash Sum mismatch issues with a more robust approach
+RUN rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /etc/apt/apt.conf.d \
+    && echo 'Acquire::http::Pipeline-Depth "0";' > /etc/apt/apt.conf.d/99custom \
+    && echo 'Acquire::http::No-Cache "true";' >> /etc/apt/apt.conf.d/99custom \
+    && echo 'Acquire::BrokenProxy "true";' >> /etc/apt/apt.conf.d/99custom \
+    && echo 'Acquire::CompressionTypes::Order:: "gz";' >> /etc/apt/apt.conf.d/99custom \
+    && apt-get clean \
+    && apt-get update
+
+RUN apt-get update && apt-get -y upgrade
+
+# Install UI Requirements
+RUN apt-get update && apt-get -y install \
     xvfb \
     xterm \
     xdotool \
@@ -14,10 +24,12 @@ RUN apt-get update && \
     imagemagick \
     sudo \
     mutter \
-    x11vnc \
-    # Python/pyenv reqs
+    x11vnc
+
+# Install Python/pyenv requirements
+RUN apt-get update && apt-get -y install \
     build-essential \
-    libssl-dev  \
+    libssl-dev \
     zlib1g-dev \
     libbz2-dev \
     libreadline-dev \
@@ -30,15 +42,19 @@ RUN apt-get update && \
     libxml2-dev \
     libxmlsec1-dev \
     libffi-dev \
-    liblzma-dev \
-    # Network tools
+    liblzma-dev
+
+# Install network tools and PPA requirements
+RUN apt-get update && apt-get -y install \
     net-tools \
     netcat \
-    # PPA req
-    software-properties-common && \
-    # Userland apps
-    sudo add-apt-repository ppa:mozillateam/ppa && \
-    sudo apt-get install -y --no-install-recommends \
+    software-properties-common
+
+# Install userland apps
+RUN apt-get update \
+    && sudo add-apt-repository ppa:mozillateam/ppa \
+    && sudo apt-get update \
+    && sudo apt-get install -y --no-install-recommends \
     libreoffice \
     firefox-esr \
     x11-apps \
@@ -48,8 +64,8 @@ RUN apt-get update && \
     tint2 \
     galculator \
     pcmanfm \
-    unzip && \
-    apt-get clean
+    unzip \
+    && apt-get clean
 
 # Install noVNC
 RUN git clone --branch v1.5.0 https://github.com/novnc/noVNC.git /opt/noVNC && \
