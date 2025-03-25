@@ -7,6 +7,8 @@ from collections.abc import Callable
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, cast
+import json
+import logging
 
 import httpx
 from anthropic import (
@@ -35,6 +37,9 @@ from .tools import (
     ToolResult,
     ToolVersion,
 )
+
+# Настроить логгер
+logger = logging.getLogger("computer_use_demo.loop")
 
 PROMPT_CACHING_BETA_FLAG = "prompt-caching-2024-07-31"
 
@@ -66,6 +71,46 @@ SYSTEM_PROMPT = f"""<SYSTEM_CAPABILITY>
 * If the item you are looking at is a pdf, if after taking a single screenshot of the pdf it seems that you want to read the entire document instead of trying to continue to read the pdf from your screenshots + navigation, determine the URL, use curl to download the pdf, install and use pdftotext to convert it to a text file, and then read that text file directly with your StrReplaceEditTool.
 </IMPORTANT>"""
 
+# Define system prompts for each agent
+AGENT_PROMPTS = {
+    "manager": f"""<SYSTEM_CAPABILITY>
+* You are the manager agent in a multi-agent system for controlling an Ubuntu virtual machine.
+* Your job is to analyze user requests and delegate to specialized agents.
+* You have access to the following specialized agents:
+  - general: Handles general-purpose tasks (default agent)
+  - login: Specialist for website navigation and authentication
+* When you determine a task should be handled by a specialized agent, use the agent tool to delegate.
+* After specialized agents complete their tasks, they will return control to you.
+* You should then decide next steps or respond directly to the user.
+* The current date is {datetime.today().strftime('%A, %B %-d, %Y')}.
+</SYSTEM_CAPABILITY>
+
+<IMPORTANT>
+* Always ask clarifying questions when the user's request is ambiguous.
+* Keep track of the conversation and maintain context when switching between agents.
+* When specialized agents return control, review their output before proceeding.
+</IMPORTANT>""",
+    
+    "general": SYSTEM_PROMPT,  # Use existing system prompt for general agent
+    
+    "login": f"""<SYSTEM_CAPABILITY>
+* You are the login specialist agent in a multi-agent system for controlling an Ubuntu virtual machine.
+* Your specialty is website navigation and authentication processes.
+* You excel at:
+  - Finding the correct website for the user's task
+  - Efficiently executing login processes
+  - Navigating to specific projects or sections after login
+* When your task is complete, use the agent tool to return control to the manager agent.
+* The current date is {datetime.today().strftime('%A, %B %-d, %Y')}.
+</SYSTEM_CAPABILITY>
+
+<IMPORTANT>
+* Focus exclusively on website navigation and authentication tasks.
+* If you encounter tasks outside your specialty, return control to the manager agent.
+* Be thorough in documenting what you've accomplished before returning control.
+</IMPORTANT>"""
+}
+
 
 async def sampling_loop(
     *,
@@ -84,15 +129,18 @@ async def sampling_loop(
     tool_version: ToolVersion,
     thinking_budget: int | None = None,
     token_efficient_tools_beta: bool = False,
+    current_agent: str = "manager",  # Add current_agent parameter with default
 ):
     """
     Agentic sampling loop for the assistant/tool interaction of computer use.
     """
     tool_group = TOOL_GROUPS_BY_VERSION[tool_version]
     tool_collection = ToolCollection(*(ToolCls() for ToolCls in tool_group.tools))
+    
+    # Use the appropriate system prompt for the current agent
     system = BetaTextBlockParam(
         type="text",
-        text=f"{SYSTEM_PROMPT}{' ' + system_prompt_suffix if system_prompt_suffix else ''}",
+        text=f"{AGENT_PROMPTS[current_agent]}{' ' + system_prompt_suffix if system_prompt_suffix else ''}",
     )
 
     while True:
@@ -136,22 +184,51 @@ async def sampling_loop(
         # implementation may be able call the SDK directly with:
         # `response = client.messages.create(...)` instead.
         try:
+            logger.info(f"Sending API request to {provider} with model={model}, tool_version={tool_version}, agent={current_agent}")
+            
+            # Логируем какие инструменты передаем в API
+            tools_params = tool_collection.to_params()
+            logger.debug(f"Using tools: {[tool['name'] for tool in tools_params]}")
+            
             raw_response = client.beta.messages.with_raw_response.create(
                 max_tokens=max_tokens,
                 messages=messages,
                 model=model,
                 system=[system],
-                tools=tool_collection.to_params(),
+                tools=tools_params,
                 betas=betas,
                 extra_body=extra_body,
             )
         except (APIStatusError, APIResponseValidationError) as e:
+            logger.error(f"API error: {e.__class__.__name__} - {e}")
+            if hasattr(e, 'response') and hasattr(e.response, 'text'):
+                error_body = e.response.text
+                try:
+                    error_json = json.loads(error_body)
+                    logger.error(f"API error details: {json.dumps(error_json, indent=2)}")
+                except json.JSONDecodeError:
+                    logger.error(f"API error raw response: {error_body}")
             api_response_callback(e.request, e.response, e)
             return messages
         except APIError as e:
+            logger.error(f"API client error: {e.__class__.__name__} - {e}")
+            if hasattr(e, 'body'):
+                try:
+                    error_body = e.body
+                    if isinstance(error_body, dict):
+                        logger.error(f"API error details: {json.dumps(error_body, indent=2)}")
+                    else:
+                        logger.error(f"API error raw body: {error_body}")
+                except Exception as json_error:
+                    logger.error(f"Error parsing API error body: {json_error}")
             api_response_callback(e.request, e.body, e)
             return messages
+        except Exception as e:
+            logger.error(f"Unexpected error when calling API: {e.__class__.__name__} - {e}", exc_info=True)
+            api_response_callback(None, None, e)
+            return messages
 
+        logger.info("Received successful API response")
         api_response_callback(
             raw_response.http_response.request, raw_response.http_response, None
         )
@@ -170,19 +247,72 @@ async def sampling_loop(
         for content_block in response_params:
             output_callback(content_block)
             if content_block["type"] == "tool_use":
-                result = await tool_collection.run(
-                    name=content_block["name"],
-                    tool_input=cast(dict[str, Any], content_block["input"]),
-                )
-                tool_result_content.append(
-                    _make_api_tool_result(result, content_block["id"])
-                )
-                tool_output_callback(result, content_block["id"])
+                logger.info(f"Tool use request: {content_block['name']} with input: {content_block['input']}")
+                try:
+                    result = await tool_collection.run(
+                        name=content_block["name"],
+                        tool_input=cast(dict[str, Any], content_block["input"]),
+                    )
+                    tool_result_content.append(
+                        _make_api_tool_result(result, content_block["id"])
+                    )
+                    tool_output_callback(result, content_block["id"])
+                except Exception as tool_error:
+                    logger.error(f"Error executing tool {content_block['name']}: {tool_error}", exc_info=True)
+                    error_result = ToolResult(error=f"Tool execution error: {str(tool_error)}")
+                    tool_result_content.append(
+                        _make_api_tool_result(error_result, content_block["id"])
+                    )
+                    tool_output_callback(error_result, content_block["id"])
 
         if not tool_result_content:
+            logger.info("No tool usage in API response, ending sampling loop")
             return messages
 
         messages.append({"content": tool_result_content, "role": "user"})
+
+        # Check if tool output contains an agent switch signal using JSON
+        if tool_result_content[0].system:
+            try:
+                data = json.loads(tool_result_content[0].system)
+                if data.get("action") == "SWITCH_AGENT":
+                    new_agent = data.get("agent")
+                    task = data.get("task")
+                    
+                    logger.info(f"Agent switch detected from {current_agent} to {new_agent} for task: {task}")
+                    
+                    # Add message to indicate agent switching
+                    messages.append({
+                        "role": "assistant",
+                        "content": [{
+                            "type": "text", 
+                            "text": f"Agent switch occurred from {current_agent} to {new_agent} for task: {task}"
+                        }]
+                    })
+                    
+                    # Recursive call to sampling_loop with new agent
+                    return await sampling_loop(
+                        model=model,
+                        provider=provider,
+                        system_prompt_suffix=system_prompt_suffix,
+                        messages=messages,
+                        output_callback=output_callback,
+                        tool_output_callback=tool_output_callback,
+                        api_response_callback=api_response_callback,
+                        api_key=api_key,
+                        only_n_most_recent_images=only_n_most_recent_images,
+                        max_tokens=max_tokens,
+                        tool_version=tool_version,
+                        thinking_budget=thinking_budget,
+                        token_efficient_tools_beta=token_efficient_tools_beta,
+                        current_agent=new_agent,  # Pass the new agent
+                    )
+            except json.JSONDecodeError:
+                # Not a valid JSON, continue normal processing
+                pass
+
+        # Возвращаем сообщения после обработки инструмента
+        return messages
 
 
 def _maybe_filter_to_n_most_recent_images(

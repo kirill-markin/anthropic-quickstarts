@@ -1,9 +1,12 @@
 import asyncio
 import os
+import logging
 from typing import Any, Literal
 
 from .base import BaseAnthropicTool, CLIResult, ToolError, ToolResult
 
+# Get logger
+logger = logging.getLogger("computer_use_demo.tools.bash")
 
 class _BashSession:
     """A session of a bash shell."""
@@ -19,11 +22,14 @@ class _BashSession:
     def __init__(self):
         self._started = False
         self._timed_out = False
+        logger.debug("Bash session initialized")
 
     async def start(self):
         if self._started:
+            logger.debug("Bash session already started")
             return
 
+        logger.info("Starting new bash session")
         self._process = await asyncio.create_subprocess_shell(
             self.command,
             preexec_fn=os.setsid,
@@ -33,27 +39,36 @@ class _BashSession:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+        logger.debug(f"Bash process started with PID: {self._process.pid}")
 
         self._started = True
 
     def stop(self):
         """Terminate the bash shell."""
         if not self._started:
+            logger.warning("Attempted to stop a session that hasn't started")
             raise ToolError("Session has not started.")
         if self._process.returncode is not None:
+            logger.debug(f"Bash process already terminated with code {self._process.returncode}")
             return
+        logger.info(f"Terminating bash process with PID: {self._process.pid}")
         self._process.terminate()
 
     async def run(self, command: str):
         """Execute a command in the bash shell."""
+        logger.info(f"Running bash command: {command}")
+        
         if not self._started:
+            logger.error("Attempted to run command on session that hasn't started")
             raise ToolError("Session has not started.")
         if self._process.returncode is not None:
+            logger.warning(f"Bash has exited with returncode {self._process.returncode}")
             return ToolResult(
                 system="tool must be restarted",
                 error=f"bash has exited with returncode {self._process.returncode}",
             )
         if self._timed_out:
+            logger.error(f"Session timed out and must be restarted")
             raise ToolError(
                 f"timed out: bash has not returned in {self._timeout} seconds and must be restarted",
             )
@@ -64,6 +79,7 @@ class _BashSession:
         assert self._process.stderr
 
         # send command to the process
+        logger.debug(f"Sending command to bash: {command}")
         self._process.stdin.write(
             command.encode() + f"; echo '{self._sentinel}'\n".encode()
         )
@@ -83,6 +99,7 @@ class _BashSession:
                         break
         except asyncio.TimeoutError:
             self._timed_out = True
+            logger.error(f"Command timed out after {self._timeout} seconds")
             raise ToolError(
                 f"timed out: bash has not returned in {self._timeout} seconds and must be restarted",
             ) from None
@@ -93,6 +110,12 @@ class _BashSession:
         error = self._process.stderr._buffer.decode()  # pyright: ignore[reportAttributeAccessIssue]
         if error.endswith("\n"):
             error = error[:-1]
+
+        # log output and error
+        if output:
+            logger.debug(f"Command stdout: {output[:100]}{'...' if len(output) > 100 else ''}")
+        if error:
+            logger.warning(f"Command stderr: {error[:100]}{'...' if len(error) > 100 else ''}")
 
         # clear the buffers so that the next output can be read correctly
         self._process.stdout._buffer.clear()  # pyright: ignore[reportAttributeAccessIssue]
@@ -114,6 +137,7 @@ class BashTool20250124(BaseAnthropicTool):
 
     def __init__(self):
         self._session = None
+        logger.debug("BashTool20250124 initialized")
         super().__init__()
 
     def to_params(self) -> Any:
@@ -125,7 +149,10 @@ class BashTool20250124(BaseAnthropicTool):
     async def __call__(
         self, command: str | None = None, restart: bool = False, **kwargs
     ):
+        logger.info(f"BashTool called with command={command}, restart={restart}")
+        
         if restart:
+            logger.info("Restarting bash session")
             if self._session:
                 self._session.stop()
             self._session = _BashSession()
@@ -134,12 +161,14 @@ class BashTool20250124(BaseAnthropicTool):
             return ToolResult(system="tool has been restarted.")
 
         if self._session is None:
+            logger.info("First use - creating new bash session")
             self._session = _BashSession()
             await self._session.start()
 
         if command is not None:
             return await self._session.run(command)
 
+        logger.error("Tool called with no command")
         raise ToolError("no command provided.")
 
 

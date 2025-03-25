@@ -7,6 +7,7 @@ import base64
 import os
 import subprocess
 import traceback
+import logging
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -95,8 +96,14 @@ class Sender(StrEnum):
 
 
 def setup_state():
+    """
+    Setup session state for streamlit. We save messages in st.session_state.messages,
+    user inputs in st.session_state.inputs
+    """
     if "messages" not in st.session_state:
         st.session_state.messages = []
+    if "inputs" not in st.session_state:
+        st.session_state.inputs = {}
     if "api_key" not in st.session_state:
         # Try to load API key from file first, then environment
         st.session_state.api_key = load_from_storage("api_key") or os.getenv(
@@ -129,6 +136,9 @@ def setup_state():
     # Check if thinking should be enabled via environment variable
     if "thinking" not in st.session_state:
         st.session_state.thinking = os.getenv("ENABLE_THINKING", "").lower() in ["true", "1", "yes"]
+    # Add current_agent state for multi-agent architecture
+    if "current_agent" not in st.session_state:
+        st.session_state.current_agent = "manager"
 
 
 def _reset_model():
@@ -151,9 +161,20 @@ def _reset_model_conf():
     st.session_state.thinking_budget = int(model_conf.default_output_tokens / 2)
 
 
+# Configure logging
+log_level = os.getenv("STREAMLIT_LOGLEVEL", "INFO").upper()
+logging.basicConfig(
+    level=getattr(logging, log_level),
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger("computer_use_demo")
+logger.info(f"Starting Computer Use Demo with log level: {log_level}")
+
+
 async def main():
     """Render loop for streamlit"""
     setup_state()
+    logger.info("Streamlit app started, state initialized")
 
     st.markdown(STREAMLIT_STYLE, unsafe_allow_html=True)
 
@@ -180,6 +201,9 @@ async def main():
         )
 
         st.text_input("Model", key="model", on_change=_reset_model_conf)
+        
+        # Add current agent display
+        st.text(f"Current agent: {st.session_state.current_agent}")
 
         if st.session_state.provider == APIProvider.ANTHROPIC:
             st.text_input(
@@ -272,8 +296,15 @@ async def main():
         for identity, (request, response) in st.session_state.responses.items():
             _render_api_response(request, response, identity, http_logs)
 
-        # render past chats
+        # When first user message is received
+        if new_message and not any(m["role"] == "user" for m in st.session_state.messages):
+            # First message in conversation, ensure initial agent is shown
+            _set_initial_agent("manager")
+            logger.info("First message in conversation, initial agent set to manager")
+        
+        # Process new message if one exists
         if new_message:
+            logger.info(f"Received new user message: {new_message}")
             st.session_state.messages.append(
                 {
                     "role": Sender.USER,
@@ -284,41 +315,62 @@ async def main():
                 }
             )
             _render_message(Sender.USER, new_message)
-
-        try:
-            most_recent_message = st.session_state["messages"][-1]
-        except IndexError:
-            return
-
-        if most_recent_message["role"] is not Sender.USER:
-            # we don't have a user message to respond to, exit early
-            return
-
-        with track_sampling_loop():
-            # run the agent sampling loop with the newest message
-            st.session_state.messages = await sampling_loop(
-                system_prompt_suffix=st.session_state.custom_system_prompt,
-                model=st.session_state.model,
-                provider=st.session_state.provider,
-                messages=st.session_state.messages,
-                output_callback=partial(_render_message, Sender.BOT),
-                tool_output_callback=partial(
-                    _tool_output_callback, tool_state=st.session_state.tools
-                ),
-                api_response_callback=partial(
-                    _api_response_callback,
-                    tab=http_logs,
-                    response_state=st.session_state.responses,
-                ),
-                api_key=st.session_state.api_key,
-                only_n_most_recent_images=st.session_state.only_n_most_recent_images,
-                tool_version=st.session_state.tool_version,
-                max_tokens=st.session_state.output_tokens,
-                thinking_budget=st.session_state.thinking_budget
-                if st.session_state.thinking
-                else None,
-                token_efficient_tools_beta=st.session_state.token_efficient_tools_beta,
-            )
+            
+            # Start sampling loop in async task
+            try:
+                logger.info("Starting sampling loop to process user message")
+                with track_sampling_loop():
+                    if st.session_state.thinking:
+                        thinking_budget = st.session_state.thinking_budget
+                        logger.debug(f"Thinking mode enabled with budget: {thinking_budget}")
+                    else:
+                        thinking_budget = None
+                        
+                    await sampling_loop(
+                        model=st.session_state.model,
+                        provider=cast(APIProvider, st.session_state.provider),
+                        system_prompt_suffix=st.session_state.custom_system_prompt,
+                        messages=[
+                            {
+                                "role": message["role"],
+                                "content": cast(list[BetaContentBlockParam], message["content"])
+                                if isinstance(message["content"], list)
+                                else [
+                                    BetaTextBlockParam(type="text", text=cast(str, message["content"]))
+                                ],
+                            }
+                            for message in st.session_state.messages
+                        ],
+                        output_callback=partial(
+                            _output_callback, current_agent=st.session_state.current_agent
+                        ),
+                        tool_output_callback=partial(
+                            _tool_output_callback, tool_state=st.session_state.tools
+                        ),
+                        api_response_callback=partial(
+                            _api_response_callback,
+                            tab=http_logs,
+                            response_state=st.session_state.responses,
+                        ),
+                        api_key=st.session_state.api_key,
+                        only_n_most_recent_images=st.session_state.only_n_most_recent_images,
+                        max_tokens=st.session_state.output_tokens,
+                        tool_version=cast(ToolVersion, st.session_state.tool_version),
+                        thinking_budget=thinking_budget,
+                        token_efficient_tools_beta=st.session_state.token_efficient_tools_beta,
+                        current_agent=st.session_state.current_agent,
+                    )
+                    logger.info("Sampling loop completed successfully")
+            except asyncio.CancelledError:
+                logger.warning("Sampling loop was cancelled")
+                return
+            except RateLimitError as e:
+                logger.error(f"Rate limit error: {e}")
+                _render_error(e)
+            except Exception as e:
+                logger.error(f"Error in sampling loop: {e}", exc_info=True)
+                _render_error(e)
+                st.code(traceback.format_exc())
 
 
 def maybe_add_interruption_blocks():
@@ -421,6 +473,12 @@ def _tool_output_callback(
     tool_output: ToolResult, tool_id: str, tool_state: dict[str, ToolResult]
 ):
     """Handle a tool output by storing it to state and rendering it."""
+    logger.info(f"Tool output for tool_id {tool_id}: {'SUCCESS' if not tool_output.error else 'ERROR'}")
+    if tool_output.error:
+        logger.error(f"Tool error: {tool_output.error}")
+    if tool_output.output:
+        logger.debug(f"Tool output: {tool_output.output[:100]}...")
+    
     tool_state[tool_id] = tool_output
     _render_message(Sender.TOOL, tool_output)
 
@@ -503,6 +561,54 @@ def _render_message(
                 raise Exception(f'Unexpected response type {message["type"]}')
         else:
             st.markdown(message)
+
+
+def _handle_agent_switch(from_agent: str, to_agent: str, task: str):
+    """Add system message about agent switching to chat history."""
+    switch_message = {
+        "role": "assistant",
+        "content": f"🔄 AGENT SWITCH: {from_agent.upper()} → {to_agent.upper()}\nTask: {task}"
+    }
+    
+    # Add to message history - this will automatically be displayed in the UI
+    st.session_state.messages.append(switch_message)
+    
+    # Update current agent
+    st.session_state.current_agent = to_agent
+
+
+def _set_initial_agent(agent: str = "manager"):
+    """Add system message indicating the initial agent taking the request."""
+    initial_message = {
+        "role": "assistant",
+        "content": f"🚀 {agent.upper()} AGENT is processing your request"
+    }
+    
+    # Add to message history
+    st.session_state.messages.append(initial_message)
+    
+    # Set current agent
+    st.session_state.current_agent = agent
+
+
+def _output_callback(content: BetaContentBlockParam, current_agent: str):
+    """Handle a content block from the agent's response."""
+    if content["type"] == "thinking":
+        logger.debug(f"Thinking from {current_agent} agent: {content.get('thinking', '')[:100]}...")
+    elif content["type"] == "tool_use":
+        logger.info(f"Tool use from {current_agent} agent: {content['name']} with input: {content['input']}")
+    else:
+        logger.info(f"Text output from {current_agent} agent")
+    
+    # Add to message history
+    for msg in st.session_state.messages:
+        if msg["role"] == "assistant" and isinstance(msg["content"], list):
+            msg["content"].append(content)
+            break
+    else:
+        st.session_state.messages.append(
+            {"role": "assistant", "content": [content]}
+        )
 
 
 if __name__ == "__main__":

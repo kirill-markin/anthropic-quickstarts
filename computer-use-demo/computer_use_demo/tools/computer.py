@@ -3,6 +3,7 @@ import base64
 import os
 import shlex
 import shutil
+import logging
 from enum import StrEnum
 from pathlib import Path
 from typing import Literal, TypedDict, cast, get_args
@@ -83,6 +84,9 @@ def chunks(s: str, chunk_size: int) -> list[str]:
     return [s[i : i + chunk_size] for i in range(0, len(s), chunk_size)]
 
 
+# Get logger
+logger = logging.getLogger("computer_use_demo.tools.computer")
+
 class BaseComputerTool:
     """
     A tool that allows the agent to interact with the screen, keyboard, and mouse of the current computer.
@@ -122,6 +126,7 @@ class BaseComputerTool:
             self._display_prefix = ""
 
         self.xdotool = f"{self._display_prefix}xdotool"
+        logger.debug(f"ComputerTool initialized: width={self.width}, height={self.height}, display_num={self.display_num}")
 
     async def __call__(
         self,
@@ -131,6 +136,8 @@ class BaseComputerTool:
         coordinate: tuple[int, int] | None = None,
         **kwargs,
     ):
+        logger.info(f"Computer tool called with action={action}, text={text}, coordinate={coordinate}, kwargs={kwargs}")
+        
         if action in ("mouse_move", "left_click_drag"):
             if coordinate is None:
                 raise ToolError(f"coordinate is required for {action}")
@@ -249,10 +256,18 @@ class BaseComputerTool:
 
     async def shell(self, command: str, take_screenshot=True) -> ToolResult:
         """Run a shell command and return the output, error, and optionally a screenshot."""
+        logger.info(f"Running shell command: {command}")
         _, stdout, stderr = await run(command)
+        
+        if stdout:
+            logger.debug(f"Command stdout: {stdout[:100]}{'...' if len(stdout) > 100 else ''}")
+        if stderr:
+            logger.warning(f"Command stderr: {stderr[:100]}{'...' if len(stderr) > 100 else ''}")
+            
         base64_image = None
 
         if take_screenshot:
+            logger.debug(f"Taking screenshot after command: {command}")
             # delay to let things settle before taking a screenshot
             await asyncio.sleep(self._screenshot_delay)
             base64_image = (await self.screenshot()).base64_image
