@@ -6,7 +6,7 @@ import platform
 from collections.abc import Callable
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, cast
+from typing import Any, cast, Union
 import json
 import logging
 
@@ -90,9 +90,7 @@ AGENT_PROMPTS = {
 * Keep track of the conversation and maintain context when switching between agents.
 * When specialized agents return control, review their output before proceeding.
 </IMPORTANT>""",
-    
     "general": SYSTEM_PROMPT,  # Use existing system prompt for general agent
-    
     "login": f"""<SYSTEM_CAPABILITY>
 * You are the login specialist agent in a multi-agent system for controlling an Ubuntu virtual machine.
 * Your specialty is website navigation and authentication processes.
@@ -108,7 +106,7 @@ AGENT_PROMPTS = {
 * Focus exclusively on website navigation and authentication tasks.
 * If you encounter tasks outside your specialty, return control to the manager agent.
 * Be thorough in documenting what you've accomplished before returning control.
-</IMPORTANT>"""
+</IMPORTANT>""",
 }
 
 
@@ -130,13 +128,13 @@ async def sampling_loop(
     thinking_budget: int | None = None,
     token_efficient_tools_beta: bool = False,
     current_agent: str = "manager",  # Add current_agent parameter with default
-):
+) -> list[BetaMessageParam]:
     """
     Agentic sampling loop for the assistant/tool interaction of computer use.
     """
     tool_group = TOOL_GROUPS_BY_VERSION[tool_version]
     tool_collection = ToolCollection(*(ToolCls() for ToolCls in tool_group.tools))
-    
+
     # Use the appropriate system prompt for the current agent
     system = BetaTextBlockParam(
         type="text",
@@ -184,12 +182,14 @@ async def sampling_loop(
         # implementation may be able call the SDK directly with:
         # `response = client.messages.create(...)` instead.
         try:
-            logger.info(f"Sending API request to {provider} with model={model}, tool_version={tool_version}, agent={current_agent}")
-            
+            logger.info(
+                f"Sending API request to {provider} with model={model}, tool_version={tool_version}, agent={current_agent}"
+            )
+
             # Логируем какие инструменты передаем в API
             tools_params = tool_collection.to_params()
             logger.debug(f"Using tools: {[tool['name'] for tool in tools_params]}")
-            
+
             raw_response = client.beta.messages.with_raw_response.create(
                 max_tokens=max_tokens,
                 messages=messages,
@@ -201,22 +201,26 @@ async def sampling_loop(
             )
         except (APIStatusError, APIResponseValidationError) as e:
             logger.error(f"API error: {e.__class__.__name__} - {e}")
-            if hasattr(e, 'response') and hasattr(e.response, 'text'):
+            if hasattr(e, "response") and hasattr(e.response, "text"):
                 error_body = e.response.text
                 try:
                     error_json = json.loads(error_body)
-                    logger.error(f"API error details: {json.dumps(error_json, indent=2)}")
+                    logger.error(
+                        f"API error details: {json.dumps(error_json, indent=2)}"
+                    )
                 except json.JSONDecodeError:
                     logger.error(f"API error raw response: {error_body}")
             api_response_callback(e.request, e.response, e)
             return messages
         except APIError as e:
             logger.error(f"API client error: {e.__class__.__name__} - {e}")
-            if hasattr(e, 'body'):
+            if hasattr(e, "body"):
                 try:
                     error_body = e.body
                     if isinstance(error_body, dict):
-                        logger.error(f"API error details: {json.dumps(error_body, indent=2)}")
+                        logger.error(
+                            f"API error details: {json.dumps(error_body, indent=2)}"
+                        )
                     else:
                         logger.error(f"API error raw body: {error_body}")
                 except Exception as json_error:
@@ -224,8 +228,13 @@ async def sampling_loop(
             api_response_callback(e.request, e.body, e)
             return messages
         except Exception as e:
-            logger.error(f"Unexpected error when calling API: {e.__class__.__name__} - {e}", exc_info=True)
-            api_response_callback(None, None, e)
+            logger.error(
+                f"Unexpected error when calling API: {e.__class__.__name__} - {e}",
+                exc_info=True,
+            )
+            # Create a dummy request object instead of passing None
+            dummy_request = httpx.Request("GET", "https://api.anthropic.com")
+            api_response_callback(dummy_request, None, e)
             return messages
 
         logger.info("Received successful API response")
@@ -247,7 +256,9 @@ async def sampling_loop(
         for content_block in response_params:
             output_callback(content_block)
             if content_block["type"] == "tool_use":
-                logger.info(f"Tool use request: {content_block['name']} with input: {content_block['input']}")
+                logger.info(
+                    f"Tool use request: {content_block['name']} with input: {content_block['input']}"
+                )
                 try:
                     result = await tool_collection.run(
                         name=content_block["name"],
@@ -258,8 +269,13 @@ async def sampling_loop(
                     )
                     tool_output_callback(result, content_block["id"])
                 except Exception as tool_error:
-                    logger.error(f"Error executing tool {content_block['name']}: {tool_error}", exc_info=True)
-                    error_result = ToolResult(error=f"Tool execution error: {str(tool_error)}")
+                    logger.error(
+                        f"Error executing tool {content_block['name']}: {tool_error}",
+                        exc_info=True,
+                    )
+                    error_result = ToolResult(
+                        error=f"Tool execution error: {str(tool_error)}"
+                    )
                     tool_result_content.append(
                         _make_api_tool_result(error_result, content_block["id"])
                     )
@@ -272,41 +288,54 @@ async def sampling_loop(
         messages.append({"content": tool_result_content, "role": "user"})
 
         # Check if tool output contains an agent switch signal using JSON
-        if tool_result_content[0].system:
+        if tool_result_content and tool_result_content[0].get("system"):
             try:
-                data = json.loads(tool_result_content[0].system)
+                data = json.loads(tool_result_content[0].get("system", "{}"))
                 if data.get("action") == "SWITCH_AGENT":
                     new_agent = data.get("agent")
                     task = data.get("task")
-                    
-                    logger.info(f"Agent switch detected from {current_agent} to {new_agent} for task: {task}")
-                    
-                    # Add message to indicate agent switching
-                    messages.append({
-                        "role": "assistant",
-                        "content": [{
-                            "type": "text", 
-                            "text": f"Agent switch occurred from {current_agent} to {new_agent} for task: {task}"
-                        }]
-                    })
-                    
-                    # Recursive call to sampling_loop with new agent
-                    return await sampling_loop(
-                        model=model,
-                        provider=provider,
-                        system_prompt_suffix=system_prompt_suffix,
-                        messages=messages,
-                        output_callback=output_callback,
-                        tool_output_callback=tool_output_callback,
-                        api_response_callback=api_response_callback,
-                        api_key=api_key,
-                        only_n_most_recent_images=only_n_most_recent_images,
-                        max_tokens=max_tokens,
-                        tool_version=tool_version,
-                        thinking_budget=thinking_budget,
-                        token_efficient_tools_beta=token_efficient_tools_beta,
-                        current_agent=new_agent,  # Pass the new agent
+
+                    logger.info(
+                        f"Agent switch detected from {current_agent} to {new_agent} for task: {task}"
                     )
+
+                    # Store the original agent before updating
+                    previous_agent = current_agent
+
+                    # Update current_agent without returning
+                    current_agent = new_agent
+
+                    # Update Streamlit session state to reflect the new agent
+                    import streamlit as st
+
+                    st.session_state.current_agent = new_agent
+                    st.session_state.agent_switched = True
+                    st.session_state.agent_switch_task = task
+
+                    # Update system prompt for the new agent
+                    system = BetaTextBlockParam(
+                        type="text",
+                        text=f"{AGENT_PROMPTS[current_agent]}{' ' + system_prompt_suffix if system_prompt_suffix else ''}",
+                    )
+
+                    # Add cache control if needed
+                    if enable_prompt_caching:
+                        system["cache_control"] = {"type": "ephemeral"}  # type: ignore
+
+                    # Add message to indicate agent switching
+                    agent_switch_message = {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": f"Agent switch occurred from {previous_agent} to {current_agent} for task: {task}",
+                            }
+                        ],
+                    }
+                    messages.append(cast(BetaMessageParam, agent_switch_message))
+
+                    # Continue loop with new agent (don't return yet)
+                    continue
             except json.JSONDecodeError:
                 # Not a valid JSON, continue normal processing
                 pass
@@ -317,7 +346,7 @@ async def sampling_loop(
 
 def _maybe_filter_to_n_most_recent_images(
     messages: list[BetaMessageParam],
-    images_to_keep: int,
+    images_to_keep: int | None,
     min_removal_threshold: int,
 ):
     """
@@ -329,7 +358,7 @@ def _maybe_filter_to_n_most_recent_images(
     if images_to_keep is None:
         return messages
 
-    tool_result_blocks = cast(
+    tool_result_blocks: list[BetaToolResultBlockParam] = cast(
         list[BetaToolResultBlockParam],
         [
             item
@@ -337,7 +366,7 @@ def _maybe_filter_to_n_most_recent_images(
             for item in (
                 message["content"] if isinstance(message["content"], list) else []
             )
-            if isinstance(item, dict) and item.get("type") == "tool_result"
+            if item.get("type") == "tool_result"
         ],
     )
 
@@ -354,13 +383,15 @@ def _maybe_filter_to_n_most_recent_images(
 
     for tool_result in tool_result_blocks:
         if isinstance(tool_result.get("content"), list):
-            new_content = []
+            new_content: list[BetaTextBlockParam | BetaImageBlockParam] = []
             for content in tool_result.get("content", []):
                 if isinstance(content, dict) and content.get("type") == "image":
                     if images_to_remove > 0:
                         images_to_remove -= 1
                         continue
-                new_content.append(content)
+                new_content.append(
+                    cast(Union[BetaTextBlockParam, BetaImageBlockParam], content)
+                )
             tool_result["content"] = new_content
 
 
@@ -407,7 +438,9 @@ def _inject_prompt_caching(
                     {"type": "ephemeral"}
                 )
             else:
-                content[-1].pop("cache_control", None)
+                # Use type ignore for the pop operation since we know it's supported
+                if "cache_control" in content[-1]:
+                    content[-1].pop("cache_control", None)  # type: ignore
                 # we'll only every have one extra turn per loop
                 break
 

@@ -9,7 +9,7 @@ class BaseAnthropicTool(metaclass=ABCMeta):
     """Abstract base class for Anthropic-defined tools."""
 
     @abstractmethod
-    def __call__(self, **kwargs) -> Any:
+    def __call__(self, **kwargs: dict[str, Any]) -> Any:
         """Executes the tool with the given arguments."""
         ...
 
@@ -49,7 +49,7 @@ class ToolResult:
             system=combine_fields(self.system, other.system),
         )
 
-    def replace(self, **kwargs):
+    def replace(self, **kwargs: dict[str, Any]) -> "ToolResult":
         """Returns a new ToolResult with the given fields replaced."""
         return replace(self, **kwargs)
 
@@ -65,5 +65,5 @@ class ToolFailure(ToolResult):
 class ToolError(Exception):
     """Raised when a tool encounters an error."""
 
-    def __init__(self, message):
-        self.message = message
+    def __init__(self, message: str):
+        self.message: str = message

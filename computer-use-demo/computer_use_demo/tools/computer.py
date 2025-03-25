@@ -6,7 +6,7 @@ import shutil
 import logging
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal, TypedDict, cast, get_args
+from typing import Literal, TypedDict, cast, get_args, Any
 from uuid import uuid4
 
 from anthropic.types.beta import BetaToolComputerUse20241022Param, BetaToolUnionParam
@@ -87,6 +87,7 @@ def chunks(s: str, chunk_size: int) -> list[str]:
 # Get logger
 logger = logging.getLogger("computer_use_demo.tools.computer")
 
+
 class BaseComputerTool:
     """
     A tool that allows the agent to interact with the screen, keyboard, and mouse of the current computer.
@@ -126,7 +127,9 @@ class BaseComputerTool:
             self._display_prefix = ""
 
         self.xdotool = f"{self._display_prefix}xdotool"
-        logger.debug(f"ComputerTool initialized: width={self.width}, height={self.height}, display_num={self.display_num}")
+        logger.debug(
+            f"ComputerTool initialized: width={self.width}, height={self.height}, display_num={self.display_num}"
+        )
 
     async def __call__(
         self,
@@ -134,10 +137,12 @@ class BaseComputerTool:
         action: Action_20241022,
         text: str | None = None,
         coordinate: tuple[int, int] | None = None,
-        **kwargs,
+        **kwargs: dict[str, Any],
     ):
-        logger.info(f"Computer tool called with action={action}, text={text}, coordinate={coordinate}, kwargs={kwargs}")
-        
+        logger.info(
+            f"Computer tool called with action={action}, text={text}, coordinate={coordinate}, kwargs={kwargs}"
+        )
+
         if action in ("mouse_move", "left_click_drag"):
             if coordinate is None:
                 raise ToolError(f"coordinate is required for {action}")
@@ -161,8 +166,8 @@ class BaseComputerTool:
                 raise ToolError(f"text is required for {action}")
             if coordinate is not None:
                 raise ToolError(f"coordinate is not accepted for {action}")
-            if not isinstance(text, str):
-                raise ToolError(output=f"{text} must be a string")
+            if type(text) is not str:
+                raise ToolError(f"{text} must be a string")
 
             if action == "key":
                 command_parts = [self.xdotool, f"key -- {text}"]
@@ -200,8 +205,8 @@ class BaseComputerTool:
             if action == "screenshot":
                 return await self.screenshot()
             elif action == "cursor_position":
-                command_parts = [self.xdotool, "getmouselocation --shell"]
-                result = await self.shell(
+                command_parts: list[str] = [self.xdotool, "getmouselocation --shell"]
+                result: ToolResult = await self.shell(
                     " ".join(command_parts),
                     take_screenshot=False,
                 )
@@ -211,7 +216,7 @@ class BaseComputerTool:
                     int(output.split("X=")[1].split("\n")[0]),
                     int(output.split("Y=")[1].split("\n")[0]),
                 )
-                return result.replace(output=f"X={x},Y={y}")
+                return result.replace(output={"position": f"X={x},Y={y}"})
             else:
                 command_parts = [self.xdotool, f"click {CLICK_BUTTONS[action]}"]
                 return await self.shell(" ".join(command_parts))
@@ -221,7 +226,7 @@ class BaseComputerTool:
     def validate_and_get_coordinates(self, coordinate: tuple[int, int] | None = None):
         if not isinstance(coordinate, list) or len(coordinate) != 2:
             raise ToolError(f"{coordinate} must be a tuple of length 2")
-        if not all(isinstance(i, int) and i >= 0 for i in coordinate):
+        if not all(type(i) is int and i >= 0 for i in coordinate):
             raise ToolError(f"{coordinate} must be a tuple of non-negative ints")
 
         return self.scale_coordinates(ScalingSource.API, coordinate[0], coordinate[1])
@@ -250,20 +255,24 @@ class BaseComputerTool:
 
         if path.exists():
             return result.replace(
-                base64_image=base64.b64encode(path.read_bytes()).decode()
+                base64_image=base64.b64encode(path.read_bytes()).decode()  # type: ignore
             )
         raise ToolError(f"Failed to take screenshot: {result.error}")
 
-    async def shell(self, command: str, take_screenshot=True) -> ToolResult:
+    async def shell(self, command: str, take_screenshot: bool = True) -> ToolResult:
         """Run a shell command and return the output, error, and optionally a screenshot."""
         logger.info(f"Running shell command: {command}")
         _, stdout, stderr = await run(command)
-        
+
         if stdout:
-            logger.debug(f"Command stdout: {stdout[:100]}{'...' if len(stdout) > 100 else ''}")
+            logger.debug(
+                f"Command stdout: {stdout[:100]}{'...' if len(stdout) > 100 else ''}"
+            )
         if stderr:
-            logger.warning(f"Command stderr: {stderr[:100]}{'...' if len(stderr) > 100 else ''}")
-            
+            logger.warning(
+                f"Command stderr: {stderr[:100]}{'...' if len(stderr) > 100 else ''}"
+            )
+
         base64_image = None
 
         if take_screenshot:
@@ -326,7 +335,7 @@ class ComputerTool20250124(BaseComputerTool, BaseAnthropicTool):
         scroll_amount: int | None = None,
         duration: int | float | None = None,
         key: str | None = None,
-        **kwargs,
+        **kwargs: dict[str, Any],
     ):
         if action in ("left_mouse_down", "left_mouse_up"):
             if coordinate is not None:
@@ -343,7 +352,7 @@ class ComputerTool20250124(BaseComputerTool, BaseAnthropicTool):
                 raise ToolError(
                     f"{scroll_direction=} must be 'up', 'down', 'left', or 'right'"
                 )
-            if not isinstance(scroll_amount, int) or scroll_amount < 0:
+            if type(scroll_amount) is not int or scroll_amount < 0:
                 raise ToolError(f"{scroll_amount=} must be a non-negative int")
             mouse_move_part = ""
             if coordinate is not None:
@@ -366,7 +375,7 @@ class ComputerTool20250124(BaseComputerTool, BaseAnthropicTool):
             return await self.shell(" ".join(command_parts))
 
         if action in ("hold_key", "wait"):
-            if duration is None or not isinstance(duration, (int, float)):
+            if duration is None or type(duration) not in (int, float):
                 raise ToolError(f"{duration=} must be a number")
             if duration < 0:
                 raise ToolError(f"{duration=} must be non-negative")
@@ -413,5 +422,5 @@ class ComputerTool20250124(BaseComputerTool, BaseAnthropicTool):
             return await self.shell(" ".join(command_parts))
 
         return await super().__call__(
-            action=action, text=text, coordinate=coordinate, key=key, **kwargs
+            action=action, text=text, coordinate=coordinate, **kwargs
         )

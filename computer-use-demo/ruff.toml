@@ -18,7 +18,7 @@ select = [
     "W",
 ]
 
-ignore = ["E501", "ASYNC230"]
+ignore = ["E501", "ASYNC230", "I001", "W293"]
 
 [lint.isort]
 combine-as-imports = true

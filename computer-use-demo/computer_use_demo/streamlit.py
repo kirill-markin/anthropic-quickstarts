@@ -23,6 +23,7 @@ from anthropic.types.beta import (
     BetaContentBlockParam,
     BetaTextBlockParam,
     BetaToolResultBlockParam,
+    BetaMessageParam,
 )
 from streamlit.delta_generator import DeltaGenerator
 
@@ -135,10 +136,22 @@ def setup_state():
         st.session_state.in_sampling_loop = False
     # Check if thinking should be enabled via environment variable
     if "thinking" not in st.session_state:
-        st.session_state.thinking = os.getenv("ENABLE_THINKING", "").lower() in ["true", "1", "yes"]
+        st.session_state.thinking = os.getenv("ENABLE_THINKING", "").lower() in [
+            "true",
+            "1",
+            "yes",
+        ]
     # Add current_agent state for multi-agent architecture
     if "current_agent" not in st.session_state:
         st.session_state.current_agent = "manager"
+    # Add flag to track agent switch events
+    if "agent_switched" not in st.session_state:
+        st.session_state.agent_switched = False
+    if "agent_switch_task" not in st.session_state:
+        st.session_state.agent_switch_task = ""
+    # HTTP logs tab placeholder
+    if "http_logs_tab" not in st.session_state:
+        st.session_state.http_logs_tab = None
 
 
 def _reset_model():
@@ -165,7 +178,7 @@ def _reset_model_conf():
 log_level = os.getenv("STREAMLIT_LOGLEVEL", "INFO").upper()
 logging.basicConfig(
     level=getattr(logging, log_level),
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger("computer_use_demo")
 logger.info(f"Starting Computer Use Demo with log level: {log_level}")
@@ -201,7 +214,7 @@ async def main():
         )
 
         st.text_input("Model", key="model", on_change=_reset_model_conf)
-        
+
         # Add current agent display
         st.text(f"Current agent: {st.session_state.current_agent}")
 
@@ -241,7 +254,11 @@ async def main():
 
         st.number_input("Max Output Tokens", key="output_tokens", step=1)
 
-        st.checkbox("Thinking Enabled", key="thinking", value=st.session_state.get("thinking", False))
+        st.checkbox(
+            "Thinking Enabled",
+            key="thinking",
+            value=st.session_state.get("thinking", False),
+        )
         st.number_input(
             "Thinking Budget",
             key="thinking_budget",
@@ -269,6 +286,9 @@ async def main():
             st.session_state.auth_validated = True
 
     chat, http_logs = st.tabs(["Chat", "HTTP Exchange Logs"])
+    # Store HTTP logs tab in session state for access in async functions
+    st.session_state.http_logs_tab = http_logs
+
     new_message = st.chat_input(
         "Type a message to send to Claude to control the computer..."
     )
@@ -297,11 +317,13 @@ async def main():
             _render_api_response(request, response, identity, http_logs)
 
         # When first user message is received
-        if new_message and not any(m["role"] == "user" for m in st.session_state.messages):
+        if new_message and not any(
+            m["role"] == "user" for m in st.session_state.messages
+        ):
             # First message in conversation, ensure initial agent is shown
             _set_initial_agent("manager")
             logger.info("First message in conversation, initial agent set to manager")
-        
+
         # Process new message if one exists
         if new_message:
             logger.info(f"Received new user message: {new_message}")
@@ -315,70 +337,17 @@ async def main():
                 }
             )
             _render_message(Sender.USER, new_message)
-            
+
             # Start sampling loop in async task
-            try:
-                logger.info("Starting sampling loop to process user message")
-                with track_sampling_loop():
-                    if st.session_state.thinking:
-                        thinking_budget = st.session_state.thinking_budget
-                        logger.debug(f"Thinking mode enabled with budget: {thinking_budget}")
-                    else:
-                        thinking_budget = None
-                        
-                    await sampling_loop(
-                        model=st.session_state.model,
-                        provider=cast(APIProvider, st.session_state.provider),
-                        system_prompt_suffix=st.session_state.custom_system_prompt,
-                        messages=[
-                            {
-                                "role": message["role"],
-                                "content": cast(list[BetaContentBlockParam], message["content"])
-                                if isinstance(message["content"], list)
-                                else [
-                                    BetaTextBlockParam(type="text", text=cast(str, message["content"]))
-                                ],
-                            }
-                            for message in st.session_state.messages
-                        ],
-                        output_callback=partial(
-                            _output_callback, current_agent=st.session_state.current_agent
-                        ),
-                        tool_output_callback=partial(
-                            _tool_output_callback, tool_state=st.session_state.tools
-                        ),
-                        api_response_callback=partial(
-                            _api_response_callback,
-                            tab=http_logs,
-                            response_state=st.session_state.responses,
-                        ),
-                        api_key=st.session_state.api_key,
-                        only_n_most_recent_images=st.session_state.only_n_most_recent_images,
-                        max_tokens=st.session_state.output_tokens,
-                        tool_version=cast(ToolVersion, st.session_state.tool_version),
-                        thinking_budget=thinking_budget,
-                        token_efficient_tools_beta=st.session_state.token_efficient_tools_beta,
-                        current_agent=st.session_state.current_agent,
-                    )
-                    logger.info("Sampling loop completed successfully")
-            except asyncio.CancelledError:
-                logger.warning("Sampling loop was cancelled")
-                return
-            except RateLimitError as e:
-                logger.error(f"Rate limit error: {e}")
-                _render_error(e)
-            except Exception as e:
-                logger.error(f"Error in sampling loop: {e}", exc_info=True)
-                _render_error(e)
-                st.code(traceback.format_exc())
+            await process_user_input()
 
 
-def maybe_add_interruption_blocks():
+def maybe_add_interruption_blocks() -> list[BetaContentBlockParam]:
     if not st.session_state.in_sampling_loop:
         return []
     # If this function is called while we're in the sampling loop, we can assume that the previous sampling loop was interrupted
     # and we should annotate the conversation with additional context for the model and heal any incomplete tool use calls
-    result = []
+    result: list[BetaContentBlockParam] = []
     last_message = st.session_state.messages[-1]
     previous_tool_use_ids = [
         block["id"] for block in last_message["content"] if block["type"] == "tool_use"
@@ -409,9 +378,9 @@ def validate_auth(provider: APIProvider, api_key: str | None):
         if not api_key:
             return "Enter your Anthropic API key in the sidebar to continue."
     if provider == APIProvider.BEDROCK:
-        import boto3
+        import boto3  # type: ignore
 
-        if not boto3.Session().get_credentials():
+        if not boto3.Session().get_credentials():  # type: ignore
             return "You must have AWS credentials set up to use the Bedrock API."
     if provider == APIProvider.VERTEX:
         import google.auth
@@ -420,7 +389,7 @@ def validate_auth(provider: APIProvider, api_key: str | None):
         if not os.environ.get("CLOUD_ML_REGION"):
             return "Set the CLOUD_ML_REGION environment variable to use the Vertex API."
         try:
-            google.auth.default(
+            google.auth.default(  # type: ignore
                 scopes=["https://www.googleapis.com/auth/cloud-platform"],
             )
         except DefaultCredentialsError:
@@ -436,7 +405,7 @@ def load_from_storage(filename: str) -> str | None:
             if data:
                 return data
     except Exception as e:
-        st.write(f"Debug: Error loading {filename}: {e}")
+        st.write(f"Debug: Error loading {filename}: {e}")  # type: ignore
     return None
 
 
@@ -449,7 +418,7 @@ def save_to_storage(filename: str, data: str) -> None:
         # Ensure only user can read/write the file
         file_path.chmod(0o600)
     except Exception as e:
-        st.write(f"Debug: Error saving {filename}: {e}")
+        st.write(f"Debug: Error saving {filename}: {e}")  # type: ignore
 
 
 def _api_response_callback(
@@ -473,12 +442,14 @@ def _tool_output_callback(
     tool_output: ToolResult, tool_id: str, tool_state: dict[str, ToolResult]
 ):
     """Handle a tool output by storing it to state and rendering it."""
-    logger.info(f"Tool output for tool_id {tool_id}: {'SUCCESS' if not tool_output.error else 'ERROR'}")
+    logger.info(
+        f"Tool output for tool_id {tool_id}: {'SUCCESS' if not tool_output.error else 'ERROR'}"
+    )
     if tool_output.error:
         logger.error(f"Tool error: {tool_output.error}")
     if tool_output.output:
         logger.debug(f"Tool output: {tool_output.output[:100]}...")
-    
+
     tool_state[tool_id] = tool_output
     _render_message(Sender.TOOL, tool_output)
 
@@ -504,7 +475,7 @@ def _render_api_response(
                 )
                 st.json(response.text)
             else:
-                st.write(response)
+                st.write(response)  # type: ignore
 
 
 def _render_error(error: Exception):
@@ -538,7 +509,6 @@ def _render_message(
         return
     with st.chat_message(sender):
         if is_tool_result:
-            message = cast(ToolResult, message)
             if message.output:
                 if message.__class__.__name__ == "CLIResult":
                     st.code(message.output)
@@ -550,7 +520,7 @@ def _render_message(
                 st.image(base64.b64decode(message.base64_image))
         elif isinstance(message, dict):
             if message["type"] == "text":
-                st.write(message["text"])
+                st.write(message["text"])  # type: ignore
             elif message["type"] == "thinking":
                 thinking_content = message.get("thinking", "")
                 st.markdown(f"[Thinking]\n\n{thinking_content}")
@@ -563,30 +533,44 @@ def _render_message(
             st.markdown(message)
 
 
-def _handle_agent_switch(from_agent: str, to_agent: str, task: str):
+def handle_agent_switch(from_agent: str, to_agent: str, task: str) -> None:
     """Add system message about agent switching to chat history."""
     switch_message = {
         "role": "assistant",
-        "content": f"🔄 AGENT SWITCH: {from_agent.upper()} → {to_agent.upper()}\nTask: {task}"
+        "content": f"🔄 AGENT SWITCH: {from_agent.upper()} → {to_agent.upper()}\nTask: {task}",
     }
-    
+
     # Add to message history - this will automatically be displayed in the UI
     st.session_state.messages.append(switch_message)
-    
+
     # Update current agent
     st.session_state.current_agent = to_agent
+
+    # Set the agent_switched flag and task to trigger a new API call after the current one completes
+    st.session_state.agent_switched = True
+    st.session_state.agent_switch_task = task
+
+    # Add loading indicator for the new agent
+    loading_placeholder = st.empty()
+    loading_placeholder.info(
+        f"🔄 {to_agent.upper()} agent is now processing task: {task}"
+    )
+
+    logger.info(
+        f"Agent switch complete. Set agent_switched flag to trigger follow-up API call for task: {task}"
+    )
 
 
 def _set_initial_agent(agent: str = "manager"):
     """Add system message indicating the initial agent taking the request."""
     initial_message = {
         "role": "assistant",
-        "content": f"🚀 {agent.upper()} AGENT is processing your request"
+        "content": f"🚀 {agent.upper()} AGENT is processing your request",
     }
-    
+
     # Add to message history
     st.session_state.messages.append(initial_message)
-    
+
     # Set current agent
     st.session_state.current_agent = agent
 
@@ -594,21 +578,115 @@ def _set_initial_agent(agent: str = "manager"):
 def _output_callback(content: BetaContentBlockParam, current_agent: str):
     """Handle a content block from the agent's response."""
     if content["type"] == "thinking":
-        logger.debug(f"Thinking from {current_agent} agent: {content.get('thinking', '')[:100]}...")
+        logger.debug(
+            f"Thinking from {current_agent} agent: {content.get('thinking', '')[:100]}..."
+        )
     elif content["type"] == "tool_use":
-        logger.info(f"Tool use from {current_agent} agent: {content['name']} with input: {content['input']}")
+        logger.info(
+            f"Tool use from {current_agent} agent: {content['name']} with input: {content['input']}"
+        )
     else:
         logger.info(f"Text output from {current_agent} agent")
-    
+
     # Add to message history
     for msg in st.session_state.messages:
         if msg["role"] == "assistant" and isinstance(msg["content"], list):
             msg["content"].append(content)
             break
     else:
-        st.session_state.messages.append(
-            {"role": "assistant", "content": [content]}
-        )
+        st.session_state.messages.append({"role": "assistant", "content": [content]})
+
+
+async def process_user_input():
+    """Process the latest user input or agent switch task."""
+    # Use HTTP logs tab from session state
+    http_logs = st.session_state.http_logs_tab
+
+    try:
+        logger.info("Starting sampling loop to process user message")
+        with track_sampling_loop():
+            if st.session_state.thinking:
+                thinking_budget = st.session_state.thinking_budget
+                logger.debug(f"Thinking mode enabled with budget: {thinking_budget}")
+            else:
+                thinking_budget = None
+
+            await sampling_loop(
+                model=st.session_state.model,
+                provider=cast(APIProvider, st.session_state.provider),
+                system_prompt_suffix=st.session_state.custom_system_prompt,
+                messages=[
+                    {
+                        "role": message["role"],
+                        "content": cast(list[BetaContentBlockParam], message["content"])
+                        if isinstance(message["content"], list)
+                        else [
+                            BetaTextBlockParam(
+                                type="text", text=cast(str, message["content"])
+                            )
+                        ],
+                    }
+                    for message in st.session_state.messages
+                ],
+                output_callback=partial(
+                    _output_callback, current_agent=st.session_state.current_agent
+                ),
+                tool_output_callback=partial(
+                    _tool_output_callback, tool_state=st.session_state.tools
+                ),
+                api_response_callback=partial(
+                    _api_response_callback,
+                    tab=http_logs,
+                    response_state=st.session_state.responses,
+                ),
+                api_key=st.session_state.api_key,
+                only_n_most_recent_images=st.session_state.only_n_most_recent_images,
+                max_tokens=st.session_state.output_tokens,
+                tool_version=cast(ToolVersion, st.session_state.tool_version),
+                thinking_budget=thinking_budget,
+                token_efficient_tools_beta=st.session_state.token_efficient_tools_beta,
+                current_agent=st.session_state.current_agent,
+            )
+            logger.info("Sampling loop completed successfully")
+
+            # Check if agent switch occurred and we need to start a new API call
+            if st.session_state.agent_switched:
+                logger.info(
+                    f"Agent switch detected, initiating follow-up API call with {st.session_state.current_agent} agent"
+                )
+                st.session_state.agent_switched = False
+
+                # Add a virtual system message to trigger the new agent to start
+                virtual_system_message = {
+                    "role": "user",
+                    "content": [
+                        BetaTextBlockParam(
+                            type="text",
+                            text=f"Please continue with the task: {st.session_state.agent_switch_task}",
+                        )
+                    ],
+                }
+
+                st.session_state.messages.append(
+                    cast(BetaMessageParam, virtual_system_message)
+                )
+                _render_message(
+                    Sender.USER,
+                    f"Please continue with the task: {st.session_state.agent_switch_task}",
+                )
+
+                # Start another sampling loop with the new agent
+                await process_user_input()
+    except asyncio.CancelledError:
+        logger.warning("Sampling loop was cancelled")
+        return
+    except RateLimitError as e:
+        logger.error(f"Rate limit error: {e}")
+        _render_error(e)
+    except Exception as e:
+        logger.error(f"Error in sampling loop: {e}", exc_info=True)
+        _render_error(e)
+        st.code(traceback.format_exc())
 
 
 if __name__ == "__main__":

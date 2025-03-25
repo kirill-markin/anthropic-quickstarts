@@ -46,7 +46,7 @@ class EditTool20250124(BaseAnthropicTool):
         old_str: str | None = None,
         new_str: str | None = None,
         insert_line: int | None = None,
-        **kwargs,
+        **kwargs: dict[str, Any],
     ):
         _path = Path(path)
         self.validate_path(command, _path)
@@ -122,7 +122,7 @@ class EditTool20250124(BaseAnthropicTool):
         file_content = self.read_file(path)
         init_line = 1
         if view_range:
-            if len(view_range) != 2 or not all(isinstance(i, int) for i in view_range):
+            if len(view_range) != 2 or not all(type(i) is int for i in view_range):
                 raise ToolError(
                     "Invalid `view_range`. It should be a list of two integers."
                 )

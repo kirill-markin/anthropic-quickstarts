@@ -8,6 +8,7 @@ from .base import BaseAnthropicTool, CLIResult, ToolError, ToolResult
 # Get logger
 logger = logging.getLogger("computer_use_demo.tools.bash")
 
+
 class _BashSession:
     """A session of a bash shell."""
 
@@ -49,7 +50,9 @@ class _BashSession:
             logger.warning("Attempted to stop a session that hasn't started")
             raise ToolError("Session has not started.")
         if self._process.returncode is not None:
-            logger.debug(f"Bash process already terminated with code {self._process.returncode}")
+            logger.debug(
+                f"Bash process already terminated with code {self._process.returncode}"
+            )
             return
         logger.info(f"Terminating bash process with PID: {self._process.pid}")
         self._process.terminate()
@@ -57,18 +60,20 @@ class _BashSession:
     async def run(self, command: str):
         """Execute a command in the bash shell."""
         logger.info(f"Running bash command: {command}")
-        
+
         if not self._started:
             logger.error("Attempted to run command on session that hasn't started")
             raise ToolError("Session has not started.")
         if self._process.returncode is not None:
-            logger.warning(f"Bash has exited with returncode {self._process.returncode}")
+            logger.warning(
+                f"Bash has exited with returncode {self._process.returncode}"
+            )
             return ToolResult(
                 system="tool must be restarted",
                 error=f"bash has exited with returncode {self._process.returncode}",
             )
         if self._timed_out:
-            logger.error(f"Session timed out and must be restarted")
+            logger.error("Session timed out and must be restarted")
             raise ToolError(
                 f"timed out: bash has not returned in {self._timeout} seconds and must be restarted",
             )
@@ -92,7 +97,7 @@ class _BashSession:
                     await asyncio.sleep(self._output_delay)
                     # if we read directly from stdout/stderr, it will wait forever for
                     # EOF. use the StreamReader buffer directly instead.
-                    output = self._process.stdout._buffer.decode()  # pyright: ignore[reportAttributeAccessIssue]
+                    output: str = str(self._process.stdout._buffer.decode())  # pyright: ignore[reportAttributeAccessIssue] # type: ignore
                     if self._sentinel in output:
                         # strip the sentinel and break
                         output = output[: output.index(self._sentinel)]
@@ -107,19 +112,23 @@ class _BashSession:
         if output.endswith("\n"):
             output = output[:-1]
 
-        error = self._process.stderr._buffer.decode()  # pyright: ignore[reportAttributeAccessIssue]
+        error: str = str(self._process.stderr._buffer.decode())  # pyright: ignore[reportAttributeAccessIssue] # type: ignore
         if error.endswith("\n"):
             error = error[:-1]
 
         # log output and error
         if output:
-            logger.debug(f"Command stdout: {output[:100]}{'...' if len(output) > 100 else ''}")
+            logger.debug(
+                f"Command stdout: {output[:100]}{'...' if len(output) > 100 else ''}"
+            )
         if error:
-            logger.warning(f"Command stderr: {error[:100]}{'...' if len(error) > 100 else ''}")
+            logger.warning(
+                f"Command stderr: {error[:100]}{'...' if len(error) > 100 else ''}"
+            )
 
         # clear the buffers so that the next output can be read correctly
-        self._process.stdout._buffer.clear()  # pyright: ignore[reportAttributeAccessIssue]
-        self._process.stderr._buffer.clear()  # pyright: ignore[reportAttributeAccessIssue]
+        self._process.stdout._buffer.clear()  # pyright: ignore[reportAttributeAccessIssue] # type: ignore
+        self._process.stderr._buffer.clear()  # pyright: ignore[reportAttributeAccessIssue] # type: ignore
 
         return CLIResult(output=output, error=error)
 
@@ -147,10 +156,13 @@ class BashTool20250124(BaseAnthropicTool):
         }
 
     async def __call__(
-        self, command: str | None = None, restart: bool = False, **kwargs
+        self,
+        command: str | None = None,
+        restart: bool = False,
+        **kwargs: dict[str, Any],
     ):
         logger.info(f"BashTool called with command={command}, restart={restart}")
-        
+
         if restart:
             logger.info("Restarting bash session")
             if self._session:
