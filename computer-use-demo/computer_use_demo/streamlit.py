@@ -25,11 +25,26 @@ from anthropic.types.beta import (
 )
 from streamlit.delta_generator import DeltaGenerator
 
+from computer_use_demo.agents import Agent, get_logger, setup_logging
 from computer_use_demo.loop import (
     APIProvider,
-    sampling_loop,
 )
 from computer_use_demo.tools import ToolResult, ToolVersion
+
+# Logging setup using the new module
+log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
+streamlit_log_level = os.environ.get("STREAMLIT_LOGLEVEL", "INFO").upper()
+
+# If STREAMLIT_LOGLEVEL is set to debug, also set LOG_LEVEL to DEBUG
+if streamlit_log_level == "DEBUG":
+    log_level = "DEBUG"
+
+# Configure logging with the new function
+setup_logging(log_level=log_level)
+
+# Get logger for this module
+logger = get_logger(__name__)
+logger.debug("Streamlit application starting")
 
 PROVIDER_TO_DEFAULT_MODEL_NAME: dict[APIProvider, str] = {
     APIProvider.ANTHROPIC: "claude-3-7-sonnet-20250219",
@@ -128,7 +143,11 @@ def setup_state():
         st.session_state.in_sampling_loop = False
     # Check if thinking should be enabled via environment variable
     if "thinking" not in st.session_state:
-        st.session_state.thinking = os.getenv("ENABLE_THINKING", "").lower() in ["true", "1", "yes"]
+        st.session_state.thinking = os.getenv("ENABLE_THINKING", "").lower() in [
+            "true",
+            "1",
+            "yes",
+        ]
 
 
 def _reset_model():
@@ -213,11 +232,25 @@ async def main():
             key="tool_versions",
             options=versions,
             index=versions.index(st.session_state.tool_version),
+            on_change=lambda: _update_agent_tool_version(),
         )
+
+        def _update_agent_tool_version():
+            if "agent" in st.session_state:
+                old_version = st.session_state.agent.tool_version
+                st.session_state.agent.tool_version = st.session_state.tool_versions
+                st.session_state.tool_version = st.session_state.tool_versions
+                logger.debug(
+                    f"Updated agent tool_version from {old_version} to {st.session_state.tool_versions}"
+                )
 
         st.number_input("Max Output Tokens", key="output_tokens", step=1)
 
-        st.checkbox("Thinking Enabled", key="thinking", value=st.session_state.get("thinking", False))
+        st.checkbox(
+            "Thinking Enabled",
+            key="thinking",
+            value=st.session_state.get("thinking", False),
+        )
         st.number_input(
             "Thinking Budget",
             key="thinking_budget",
@@ -231,6 +264,11 @@ async def main():
                 st.session_state.clear()
                 setup_state()
 
+                # Create a new agent after reset
+                st.session_state.agent = Agent(
+                    agent_id="default_agent", tool_version=st.session_state.tool_version
+                )
+
                 subprocess.run("pkill Xvfb; pkill tint2", shell=True)  # noqa: ASYNC221
                 await asyncio.sleep(1)
                 subprocess.run("./start_all.sh", shell=True)  # noqa: ASYNC221
@@ -243,6 +281,19 @@ async def main():
             return
         else:
             st.session_state.auth_validated = True
+
+    # Initialize agent if not already created
+    if "agent" not in st.session_state:
+        st.session_state.agent = Agent(
+            agent_id="default_agent", tool_version=st.session_state.tool_version
+        )
+        logger.debug(
+            f"Created new Agent with tool_version={st.session_state.tool_version}"
+        )
+    else:
+        logger.debug(
+            f"Using existing Agent with tool_version={st.session_state.agent.tool_version}"
+        )
 
     chat, http_logs = st.tabs(["Chat", "HTTP Exchange Logs"])
     new_message = st.chat_input(
@@ -295,8 +346,9 @@ async def main():
             return
 
         with track_sampling_loop():
-            # run the agent sampling loop with the newest message
-            st.session_state.messages = await sampling_loop(
+            # Use the agent to process messages
+            logger.debug(f"Starting agent run with model={st.session_state.model}")
+            st.session_state.messages = await st.session_state.agent.run(
                 system_prompt_suffix=st.session_state.custom_system_prompt,
                 model=st.session_state.model,
                 provider=st.session_state.provider,
@@ -312,13 +364,13 @@ async def main():
                 ),
                 api_key=st.session_state.api_key,
                 only_n_most_recent_images=st.session_state.only_n_most_recent_images,
-                tool_version=st.session_state.tool_version,
                 max_tokens=st.session_state.output_tokens,
                 thinking_budget=st.session_state.thinking_budget
                 if st.session_state.thinking
                 else None,
                 token_efficient_tools_beta=st.session_state.token_efficient_tools_beta,
             )
+            logger.debug("Agent run completed")
 
 
 def maybe_add_interruption_blocks():
