@@ -109,7 +109,7 @@ For local development, use the `local-dev.sh` script in the `computer-use-demo` 
 cd computer-use-demo
 
 # Run with debug logging (recommended for development)
-STREAMLIT_LOGLEVEL=debug ./local-dev.sh
+STREAMLIT_LOGLEVEL=debug LOG_LEVEL=DEBUG ./local-dev.sh
 
 # Note: Avoid using --no-cache flag unless necessary
 # The --no-cache flag forces Docker to rebuild everything from scratch,
