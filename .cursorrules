@@ -130,3 +130,14 @@ For most development work, running without `--no-cache` is recommended as it:
 - Reuses existing Docker layers
 - Significantly reduces build time
 - Maintains the same functionality 
+
+## Repository Maintenance
+
+### Updating from Upstream
+
+To pull the latest changes from the original Anthropic repository:
+
+```bash
+git fetch upstream
+git pull upstream main
+``` 
