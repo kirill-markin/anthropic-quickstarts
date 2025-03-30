@@ -69,7 +69,7 @@ class History:
                 for item in (
                     message["content"] if isinstance(message["content"], list) else []
                 )
-                if isinstance(item, dict) and item.get("type") == "tool_result"
+                if item.get("type") == "tool_result"
             ],
         )
 

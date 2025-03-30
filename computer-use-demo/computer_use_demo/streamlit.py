@@ -26,9 +26,7 @@ from anthropic.types.beta import (
 from streamlit.delta_generator import DeltaGenerator
 
 from computer_use_demo.agents import Agent, get_logger, setup_logging
-from computer_use_demo.loop import (
-    APIProvider,
-)
+from computer_use_demo.agents.agent import APIProvider
 from computer_use_demo.tools import ToolResult, ToolVersion
 
 # Logging setup using the new module
@@ -217,7 +215,7 @@ async def main():
         st.text_area(
             "Custom System Prompt Suffix",
             key="custom_system_prompt",
-            help="Additional instructions to append to the system prompt. see computer_use_demo/loop.py for the base system prompt.",
+            help="Additional instructions to append to the system prompt. see computer-use-demo/computer_use_demo/agents/agent.py for the base system prompt.",
             on_change=lambda: save_to_storage(
                 "system_prompt", st.session_state.custom_system_prompt
             ),
