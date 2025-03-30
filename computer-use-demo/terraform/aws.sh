@@ -105,4 +105,4 @@ EOF
 systemctl enable claude.service
 systemctl start claude.service
 
-echo "Claude Computer Use Demo setup complete" 
+echo "Claude Computer Use Demo setup complete"

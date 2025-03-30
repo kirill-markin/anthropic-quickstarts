@@ -134,11 +134,11 @@ resource "aws_instance" "claude_instance" {
     volume_type = "gp3"
   }
 
-  user_data = templatefile("${path.module}/user_data.sh", {
+  user_data = templatefile("${path.module}/aws.sh", {
     anthropic_api_key = var.anthropic_api_key
   })
 
   tags = {
     Name = "claude-computer-use-demo"
   }
-} 
+}
