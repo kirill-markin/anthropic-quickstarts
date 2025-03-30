@@ -3,6 +3,13 @@
 ## Repository Overview
 This repository contains quickstart projects for building applications with Anthropic's Claude. The main focus is on the **Computer Use Demo**, which demonstrates how Claude 3.5/3.7 Sonnet models can control a desktop computer.
 
+## Core Agent Logic
+The Computer Use Demo implements an agent loop pattern in `loop.py`:
+1. `sampling_loop()` function manages the interaction between Claude and tools
+2. Three main tools: `ComputerTool` (GUI interaction), `BashTool` (terminal commands), `EditTool` (text editing)
+3. Flow: user message → Claude API call → model generates response with tool calls → tools execute → results returned to model → loop continues
+4. Key files: `loop.py` (main loop), `tools/*.py` (tool implementations), `streamlit.py` (UI frontend)
+
 ## Project Structure
 The primary directory we're working with is `computer-use-demo/`, which contains:
 - `terraform/`: Infrastructure as Code for deploying the demo on AWS EC2
@@ -90,3 +97,36 @@ docker run \
 ```
 
 The Terraform deployment already includes this flag. 
+
+## Local Development
+
+### Using local-dev.sh
+
+For local development, use the `local-dev.sh` script in the `computer-use-demo` directory. This script handles Docker container setup and configuration:
+
+```bash
+# Navigate to the computer-use-demo directory
+cd computer-use-demo
+
+# Run with debug logging (recommended for development)
+STREAMLIT_LOGLEVEL=debug ./local-dev.sh
+
+# Note: Avoid using --no-cache flag unless necessary
+# The --no-cache flag forces Docker to rebuild everything from scratch,
+# which can significantly increase build time. Only use it when:
+# - Debugging Docker build issues
+# - Making changes to Dockerfile
+# - Updating base dependencies
+```
+
+The script will:
+- Build the Docker image from local code
+- Set up necessary environment variables
+- Configure port mappings (8080, 8501, 6080, 5900)
+- Mount required volumes
+- Start the container with appropriate settings
+
+For most development work, running without `--no-cache` is recommended as it:
+- Reuses existing Docker layers
+- Significantly reduces build time
+- Maintains the same functionality 
