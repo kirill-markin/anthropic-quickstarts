@@ -400,3 +400,34 @@ class ComputerTool20250124(BaseComputerTool, BaseAnthropicTool):
         return await super().__call__(
             action=action, text=text, coordinate=coordinate, key=key, **kwargs
         )
+
+
+class ScreenshotOnlyComputerTool20250124(BaseComputerTool, BaseAnthropicTool):
+    """
+    A restricted version of the ComputerTool that only allows taking screenshots.
+    Used by the ManagerAgent to observe the screen without direct interaction.
+    """
+
+    api_type: Literal["computer_20250124"] = "computer_20250124"
+
+    def to_params(self):
+        return cast(
+            BetaToolUnionParam,
+            {"name": self.name, "type": self.api_type, **self.options},
+        )
+
+    async def __call__(
+        self,
+        *,
+        action: Action_20250124,
+        **kwargs,
+    ):
+        # Only allow the screenshot action
+        if action != "screenshot":
+            raise ToolError(
+                f"Action '{action}' is not allowed. The ManagerAgent can only take screenshots. "
+                f"Delegate to a specialist agent for computer interaction."
+            )
+
+        # Take and return a screenshot
+        return await self.screenshot()

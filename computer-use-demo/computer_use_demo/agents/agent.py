@@ -4,7 +4,6 @@ Agent implementation for Computer Use Demo.
 
 import platform
 from datetime import datetime
-from enum import StrEnum
 from typing import Any, Callable, Dict, List, Optional, cast
 
 import httpx
@@ -21,11 +20,13 @@ from anthropic.types.beta import (
     BetaToolUseBlockParam,
 )
 
+# Import HistoryTree
+from computer_use_demo.history_tree import HistoryTree
+from computer_use_demo.interfaces import APIProvider, ToolVersion
 from computer_use_demo.tools import (
     TOOL_GROUPS_BY_VERSION,
     ToolCollection,
     ToolResult,
-    ToolVersion,
 )
 
 from .history import History
@@ -35,12 +36,6 @@ from .logging import get_logger
 logger = get_logger("computer_use_demo.agents.agent")
 
 PROMPT_CACHING_BETA_FLAG = "prompt-caching-2024-07-31"
-
-
-class APIProvider(StrEnum):
-    ANTHROPIC = "anthropic"
-    BEDROCK = "bedrock"
-    VERTEX = "vertex"
 
 
 # This system prompt is optimized for the Docker environment in this repository and
@@ -93,10 +88,10 @@ def inject_prompt_caching(
     messages: list[BetaMessageParam],
 ):
     """
-    Set cache breakpoints for the 3 most recent turns
-    one cache breakpoint is left for tools/system prompt, to be shared across sessions
+    Set cache breakpoints for the 1 most recent turn only
+    3 cache breakpoints are left for tools/system prompt, to be shared across sessions
     """
-    breakpoints_remaining = 3
+    breakpoints_remaining = 1  # Changed from 2 to 1 to ensure we stay below the API limit of 4 cache_control blocks
     for message in reversed(messages):
         if message["role"] == "user" and isinstance(
             content := message["content"], list
@@ -165,6 +160,7 @@ class Agent:
         agent_id: str,
         system_prompt: str = SYSTEM_PROMPT,
         tool_version: ToolVersion = "computer_use_20250124",
+        history_tree: Optional[HistoryTree] = None,
     ) -> None:
         """Initialize Agent with required parameters.
 
@@ -172,12 +168,106 @@ class Agent:
             agent_id: Unique identifier for this agent
             system_prompt: System prompt to use for this agent
             tool_version: Tool version to use
+            history_tree: Optional global history tree to track interactions
         """
         self.agent_id = agent_id
         self.system_prompt = system_prompt
         self.tool_version = tool_version
         self.history = History()
+        self.history_tree = history_tree
         logger.debug(f"Agent '{agent_id}' initialized with tool_version={tool_version}")
+
+    def _fix_unclosed_tool_calls(self) -> None:
+        """Check for unclosed tool calls in history and add synthetic tool results.
+
+        This method scans the message history for tool_use blocks that don't have
+        corresponding tool_result blocks in the next message, and adds synthetic
+        tool_result blocks to fix the conversation history.
+        """
+        if not self.history.messages or len(self.history.messages) < 2:
+            return
+
+        messages = self.history.messages
+
+        # Scan each pair of messages for unclosed tool calls
+        for i in range(len(messages) - 1):
+            current_msg = messages[i]
+            next_msg = messages[i + 1]
+
+            # Skip if not assistant message (only they can contain tool calls)
+            if current_msg.get("role") != "assistant":
+                continue
+
+            # Extract tool_use IDs from current message
+            tool_use_ids = []
+            for content_item in current_msg.get("content", []):
+                if (
+                    isinstance(content_item, dict)
+                    and content_item.get("type") == "tool_use"
+                ):
+                    tool_use_ids.append(content_item.get("id", ""))
+
+            # Skip if no tool uses
+            if not tool_use_ids:
+                continue
+
+            # Skip if next message is not from user (should be tool results)
+            if next_msg.get("role") != "user":
+                continue
+
+            # Find which tool_use IDs have matching tool_result blocks
+            found_tool_results = set()
+            for content_item in next_msg.get("content", []):
+                if (
+                    isinstance(content_item, dict)
+                    and content_item.get("type") == "tool_result"
+                ):
+                    found_tool_results.add(content_item.get("tool_use_id", ""))
+
+            # Find missing tool results
+            missing_tool_ids = [
+                id for id in tool_use_ids if id not in found_tool_results
+            ]
+
+            # Add synthetic tool results for missing ones
+            if missing_tool_ids:
+                logger.debug(
+                    f"Agent '{self.agent_id}' found {len(missing_tool_ids)} unclosed tool calls: {missing_tool_ids}"
+                )
+
+                # Create synthetic tool results
+                new_tool_results = []
+                for tool_id in missing_tool_ids:
+                    tool_result = {
+                        "type": "tool_result",
+                        "tool_use_id": tool_id,
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "human stopped or interrupted tool execution",
+                            }
+                        ],
+                    }
+                    new_tool_results.append(tool_result)
+
+                    # Also add to history tree if available
+                    if self.history_tree:
+                        self.history_tree.add_tool_result(
+                            agent_id="user",
+                            tool_result=ToolResult(
+                                output="(user stopped or interrupted and wrote the following)",
+                                error="human stopped or interrupted tool execution",
+                                base64_image="",
+                            ),
+                        )
+
+                # Add all new tool results to the beginning of next message content
+                content_list = list(next_msg.get("content", []))
+                next_msg["content"] = new_tool_results + content_list
+
+                logger.debug(
+                    f"Agent '{self.agent_id}' added {len(new_tool_results)} synthetic tool results"
+                )
 
     async def run(
         self,
@@ -186,11 +276,13 @@ class Agent:
         model: str,
         provider: APIProvider,
         system_prompt_suffix: str,
-        output_callback: Callable[[BetaContentBlockParam], None],
-        tool_output_callback: Callable[[ToolResult, str], None],
-        api_response_callback: Callable[
-            [httpx.Request, httpx.Response | object | None, Exception | None], None
-        ],
+        output_callback: Optional[Callable[[BetaContentBlockParam], None]] = None,
+        tool_output_callback: Optional[Callable[[ToolResult, str], None]] = None,
+        api_response_callback: Optional[
+            Callable[
+                [httpx.Request, httpx.Response | object | None, Exception | None], None
+            ]
+        ] = None,
         api_key: str,
         only_n_most_recent_images: Optional[int] = None,
         max_tokens: int = 4096,
@@ -207,9 +299,9 @@ class Agent:
             model: Model name to use
             provider: API provider (anthropic, bedrock, vertex)
             system_prompt_suffix: Additional text to append to system prompt
-            output_callback: Callback for model output
-            tool_output_callback: Callback for tool output
-            api_response_callback: Callback for API responses
+            output_callback: Optional callback for model output
+            tool_output_callback: Optional callback for tool output
+            api_response_callback: Optional callback for API responses
             api_key: API key for authentication
             only_n_most_recent_images: Limit history to N most recent images
             max_tokens: Maximum tokens for model response
@@ -221,24 +313,100 @@ class Agent:
         """
         logger.debug(f"Agent '{self.agent_id}' run method called with model={model}")
 
+        # Fix any unclosed tool calls before proceeding
+        self._fix_unclosed_tool_calls()
+
         # Use the provided messages initially, but maintain our own history for later
         if not self.history.messages:
             self.history.messages = messages
             logger.debug(
                 f"Agent '{self.agent_id}' initialized history with {len(messages)} messages"
             )
+
+            # Add initial messages to global history tree if available
+            if self.history_tree:
+                for msg in messages:
+                    # Add each message to the history tree
+                    role = msg.get("role", "")
+                    content = msg.get("content", [])
+
+                    # Convert content to list if it's a string
+                    if isinstance(content, str):
+                        content_list = [BetaTextBlockParam(type="text", text=content)]
+                    else:
+                        content_list = list(content)
+
+                    if role == "user":
+                        self.history_tree.add_user_message(
+                            agent_id=self.agent_id,
+                            content=cast(List[BetaContentBlockParam], content_list),
+                        )
+                    elif role == "assistant":
+                        self.history_tree.add_assistant_message(
+                            agent_id=self.agent_id,
+                            content=cast(List[BetaContentBlockParam], content_list),
+                        )
+                    elif role == "system":
+                        self.history_tree.add_system_message(
+                            agent_id=self.agent_id,
+                            content=cast(List[BetaContentBlockParam], content_list),
+                        )
+                logger.debug(
+                    f"Agent '{self.agent_id}' added {len(messages)} initial messages to history tree"
+                )
         else:
             # If we already have messages in history, just update with the latest
             for msg in messages:
                 if msg not in self.history.messages:
                     self.history.append(msg)
+
+                    # Add new message to global history tree if available
+                    if self.history_tree:
+                        role = msg.get("role", "")
+                        content = msg.get("content", [])
+
+                        # Convert content to list if it's a string
+                        if isinstance(content, str):
+                            content_list = [
+                                BetaTextBlockParam(type="text", text=content)
+                            ]
+                        else:
+                            content_list = list(content)
+
+                        if role == "user":
+                            self.history_tree.add_user_message(
+                                agent_id=self.agent_id,
+                                content=cast(List[BetaContentBlockParam], content_list),
+                            )
+                        elif role == "assistant":
+                            self.history_tree.add_assistant_message(
+                                agent_id=self.agent_id,
+                                content=cast(List[BetaContentBlockParam], content_list),
+                            )
+                        elif role == "system":
+                            self.history_tree.add_system_message(
+                                agent_id=self.agent_id,
+                                content=cast(List[BetaContentBlockParam], content_list),
+                            )
+
             logger.debug(
                 f"Agent '{self.agent_id}' updated history, now has {len(self.history.messages)} messages"
             )
 
         # Get tool collection for the specified version
         tool_group = TOOL_GROUPS_BY_VERSION[self.tool_version]
-        tool_collection = ToolCollection(*(ToolCls() for ToolCls in tool_group.tools))
+        # Pass self (the agent) as manager_agent to ToolCollection if this is the manager agent
+        if self.agent_id == "manager":
+            tool_collection = ToolCollection(
+                *(ToolCls for ToolCls in tool_group.tools), manager_agent=self
+            )
+            logger.debug(
+                f"Agent '{self.agent_id}' created tool collection with manager_agent reference"
+            )
+        else:
+            tool_collection = ToolCollection(*(ToolCls for ToolCls in tool_group.tools))
+            logger.debug(f"Agent '{self.agent_id}' created standard tool collection")
+
         logger.debug(
             f"Agent '{self.agent_id}' created tool collection for version {self.tool_version}"
         )
@@ -312,6 +480,7 @@ class Agent:
                 logger.debug(
                     f"Agent '{self.agent_id}' sending API request to {provider} with model {model}"
                 )
+
                 raw_response = client.beta.messages.with_raw_response.create(
                     max_tokens=max_tokens,
                     messages=self.history.messages,
@@ -324,16 +493,19 @@ class Agent:
                 logger.debug(f"Agent '{self.agent_id}' received API response")
             except (APIStatusError, APIResponseValidationError) as e:
                 logger.error(f"Agent '{self.agent_id}' API error: {e}")
-                api_response_callback(e.request, e.response, e)
+                if api_response_callback:
+                    api_response_callback(e.request, e.response, e)
                 return self.history.messages
             except APIError as e:
                 logger.error(f"Agent '{self.agent_id}' API error: {e}")
-                api_response_callback(e.request, e.body, e)
+                if api_response_callback:
+                    api_response_callback(e.request, e.body, e)
                 return self.history.messages
 
-            api_response_callback(
-                raw_response.http_response.request, raw_response.http_response, None
-            )
+            if api_response_callback:
+                api_response_callback(
+                    raw_response.http_response.request, raw_response.http_response, None
+                )
 
             response = raw_response.parse()
 
@@ -347,22 +519,84 @@ class Agent:
             )
             logger.debug(f"Agent '{self.agent_id}' added assistant response to history")
 
+            # Add assistant response to global history tree if available
+            if self.history_tree:
+                # Handle thinking blocks separately from other response blocks
+                for block in response_params:
+                    if block.get("type") == "thinking":
+                        # Add thinking to history tree
+                        self.history_tree.add_thinking(
+                            agent_id=self.agent_id,
+                            thinking_content=block.get("thinking", ""),
+                        )
+
+                # Add main assistant message to history tree
+                self.history_tree.add_assistant_message(
+                    agent_id=self.agent_id,
+                    content=cast(List[BetaContentBlockParam], response_params),
+                )
+                logger.debug(
+                    f"Agent '{self.agent_id}' added assistant response to history tree"
+                )
+
             # Process tool calls
             tool_result_content: List[BetaToolResultBlockParam] = []
             for content_block in response_params:
-                output_callback(content_block)
+                if output_callback:
+                    output_callback(content_block)
+
                 if content_block["type"] == "tool_use":
                     logger.debug(
                         f"Agent '{self.agent_id}' executing tool: {content_block['name']}"
                     )
+
+                    # Add tool call to history tree if available
+                    if self.history_tree:
+                        self.history_tree.add_tool_call(
+                            agent_id=self.agent_id,
+                            tool_call=cast(BetaToolUseBlockParam, content_block),
+                        )
+                        logger.debug(
+                            f"Agent '{self.agent_id}' added tool call to history tree"
+                        )
+
+                    # Execute the tool
                     result = await tool_collection.run(
                         name=content_block["name"],
                         tool_input=cast(dict[str, Any], content_block["input"]),
                     )
-                    tool_result_content.append(
-                        make_api_tool_result(result, content_block["id"])
+
+                    # Add tool result to history tree if available
+                    if self.history_tree:
+                        # Convert tool result to API format for history tree
+                        api_result = make_api_tool_result(result, content_block["id"])
+                        # Add metadata to help identify if this result contains an image
+                        if result.base64_image:
+                            self.history_tree.add_tool_result(
+                                agent_id=self.agent_id,
+                                tool_result=api_result,
+                                extra_metadata={
+                                    "has_image": True,
+                                    "image_data": result.base64_image,
+                                },
+                            )
+                        else:
+                            self.history_tree.add_tool_result(
+                                agent_id=self.agent_id, tool_result=api_result
+                            )
+                        logger.debug(
+                            f"Agent '{self.agent_id}' added tool result to history tree"
+                        )
+
+                    # Add result to response
+                    tool_result_block = make_api_tool_result(
+                        result, content_block["id"]
                     )
-                    tool_output_callback(result, content_block["id"])
+                    tool_result_content.append(tool_result_block)
+
+                    if tool_output_callback:
+                        tool_output_callback(result, content_block["id"])
+
                     logger.debug(
                         f"Agent '{self.agent_id}' completed tool execution: {content_block['name']}"
                     )
@@ -377,6 +611,8 @@ class Agent:
             # Add tool results to history
             self.history.append({"content": tool_result_content, "role": "user"})
             logger.debug(f"Agent '{self.agent_id}' added tool results to history")
+
+            # Note: Tool results are already added to history_tree in the tool execution loop
 
         # Return the updated message history
         return self.history.messages
