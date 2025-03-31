@@ -4,11 +4,10 @@
 This repository contains quickstart projects for building applications with Anthropic's Claude. The main focus is on the **Computer Use Demo**, which demonstrates how Claude 3.5/3.7 Sonnet models can control a desktop computer.
 
 ## Core Agent Logic
-The Computer Use Demo implements an agent loop pattern in `loop.py`:
-1. `sampling_loop()` function manages the interaction between Claude and tools
+The Computer Use Demo implements an agent loop pattern in `computer-use-demo/computer_use_demo/agents/agent.py`
 2. Three main tools: `ComputerTool` (GUI interaction), `BashTool` (terminal commands), `EditTool` (text editing)
 3. Flow: user message → Claude API call → model generates response with tool calls → tools execute → results returned to model → loop continues
-4. Key files: `loop.py` (main loop), `tools/*.py` (tool implementations), `streamlit.py` (UI frontend)
+4. Key files: `computer-use-demo/computer_use_demo/agents/*
 
 ## Project Structure
 The primary directory we're working with is `computer-use-demo/`, which contains:
@@ -109,7 +108,7 @@ For local development, use the `local-dev.sh` script in the `computer-use-demo` 
 cd computer-use-demo
 
 # Run with debug logging (recommended for development)
-STREAMLIT_LOGLEVEL=debug ./local-dev.sh
+STREAMLIT_LOGLEVEL=debug LOG_LEVEL=DEBUG ./local-dev.sh
 
 # Note: Avoid using --no-cache flag unless necessary
 # The --no-cache flag forces Docker to rebuild everything from scratch,

@@ -1,12 +1,22 @@
 from dataclasses import dataclass
 from typing import Literal
 
+from computer_use_demo.interfaces import ToolVersion
+
+from .agent_tool import AgentTool20250124
 from .base import BaseAnthropicTool
 from .bash import BashTool20241022, BashTool20250124
-from .computer import ComputerTool20241022, ComputerTool20250124
+from .computer import (
+    ComputerTool20241022,
+    ComputerTool20250124,
+    ScreenshotOnlyComputerTool20250124,
+)
 from .edit import EditTool20241022, EditTool20250124
 
-ToolVersion = Literal["computer_use_20250124", "computer_use_20241022"]
+# Keep literal type for backward compatibility
+ToolVersionLiteral = Literal[
+    "computer_use_20250124", "computer_use_20241022", "manager_only_20250124"
+]
 BetaFlag = Literal["computer-use-2024-10-22", "computer-use-2025-01-24"]
 
 
@@ -25,7 +35,18 @@ TOOL_GROUPS: list[ToolGroup] = [
     ),
     ToolGroup(
         version="computer_use_20250124",
-        tools=[ComputerTool20250124, EditTool20250124, BashTool20250124],
+        tools=[
+            ComputerTool20250124,
+            EditTool20250124,
+            BashTool20250124,
+            AgentTool20250124,
+        ],
+        beta_flag="computer-use-2025-01-24",
+    ),
+    # New tool group for the manager agent with screenshot-only capability
+    ToolGroup(
+        version="manager_only_20250124",
+        tools=[ScreenshotOnlyComputerTool20250124, EditTool20250124, AgentTool20250124],
         beta_flag="computer-use-2025-01-24",
     ),
 ]

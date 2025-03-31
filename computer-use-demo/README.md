@@ -183,6 +183,14 @@ When implementing computer use yourself, we recommend using XGA resolution (1024
 
 ## Development
 
+### Script for local development
+
+```bash
+STREAMLIT_LOGLEVEL=debug LOG_LEVEL=DEBUG ./local-dev.sh
+```
+
+### Manual development
+
 ```bash
 ./setup.sh  # configure venv, install development dependencies, and install pre-commit hooks
 docker build . -t computer-use-demo:local  # manually build the docker image (optional)
