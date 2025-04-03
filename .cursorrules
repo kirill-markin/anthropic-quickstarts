@@ -13,6 +13,29 @@ The Computer Use Demo implements an agent loop pattern in `computer-use-demo/com
 The primary directory we're working with is `computer-use-demo/`, which contains:
 - `terraform/`: Infrastructure as Code for deploying the demo on AWS EC2
 - Docker configuration for running the demo in a containerized environment
+- `logs/`: Directory for application logs
+- `tests/`: Test suite for the application
+- `image/`: Contains resources for Docker image building
+- `computer_use_demo/`: Main application code
+  - `agents/`: Agent implementation files
+    - `agent.py`: Base agent class implementation
+    - `manager.py`: Manager agent implementation
+    - `specialist.py`: Specialist agent implementation
+    - `specialist_types.py`: Types of specialist agents
+    - `history.py`: Conversation history management
+    - `logging.py`: Agent logging utilities
+  - `tools/`: Tool implementation files
+    - `base.py`: Base tool classes
+    - `collection.py`: Tool collection management
+    - `groups.py`: Tool grouping by API version
+    - `computer.py`: Computer interaction tools
+    - `bash.py`: Terminal command execution
+    - `edit.py`: Text editing tools
+    - `agent_tool.py`: Agent delegation tools
+    - `run.py`: Command running utilities
+  - `history_tree.py`: Tree structure for conversation history
+  - `streamlit.py`: Web interface implementation
+  - `interfaces.py`: Interface protocols and definitions
 
 ## Terraform Deployment
 
@@ -140,3 +163,34 @@ To pull the latest changes from the original Anthropic repository:
 git fetch upstream
 git pull upstream main
 ``` 
+
+## Project Abstractions
+
+### Agents
+- **Agent** (base class): Manages conversation history, Claude API calls, and tool handling
+- **ManagerAgent**: Coordinates multi-agent system, delegates tasks to specialists
+- **SpecialistAgent**: Executes domain-specific tasks, interacts directly with computer
+
+### Tools
+- **BaseAnthropicTool**: Abstract base class for all tools
+- **ToolCollection**: Instantiates and manages tool instances for execution
+- **ToolGroup**: Defines tool classes available for specific API versions
+- **ComputerTool**: Controls mouse, keyboard, screenshots, scrolling
+- **BashTool**: Executes bash commands
+- **EditTool**: Edits text files
+- **AgentTool**: Delegates tasks between agents
+
+### History and Tracking
+- **History**: Conversation history for a single agent
+- **HistoryTree**: Tree structure tracking all interactions, supporting nested specialist sessions
+- **HistoryNode**: Nodes in the history tree
+
+### User Input Processing
+- Interruption handling mechanisms for tool calls
+- Message processing lifecycle from user input through manager to active agent
+- Active agent management via get/set methods
+
+### Interfaces
+- **Streamlit Interface**: Web interface for system interaction
+- **Interface Protocols**: Protocols to avoid cyclic dependencies
+- **API Provider**: Enumeration of Claude API providers (Anthropic, Bedrock, Vertex) 
