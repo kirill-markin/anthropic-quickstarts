@@ -5,10 +5,14 @@ This module defines the available specialist types, their prompts, and descripti
 It serves as a single source of truth for specialist configuration.
 """
 
-from dataclasses import dataclass
-from typing import Dict
+from __future__ import annotations
 
-from computer_use_demo.interfaces import ToolVersion
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Dict
+
+# Используем TYPE_CHECKING для избежания циклических импортов
+if TYPE_CHECKING:
+    pass
 
 
 @dataclass
@@ -51,7 +55,7 @@ SPECIALIST_TYPES: Dict[str, SpecialistType] = {
     "web_auth": SpecialistType(
         id="web_auth",
         name="Web Authentication Specialist",
-        description="Specialist for opening URLs and handling authentication processes in web applications",
+        description="Specialist for opening URLs and handling authentication processes in web applications. You MUST use the web browser to open URLs and handle authentication processes.",
         prompt_suffix="""
 <SPECIALIZATION>
 You specialize in opening URLs and handling authentication processes, including:
@@ -61,6 +65,7 @@ You specialize in opening URLs and handling authentication processes, including:
 - Maintaining secure login sessions
 - Taking screenshots to verify successful logins
 - Handling login errors and providing clear explanations
+- Before switch to manager please make shure related apps are in full screen mode and all ready to use
 
 You understand security best practices and know how to approach login processes systematically.
 </SPECIALIZATION>
@@ -74,8 +79,8 @@ You understand security best practices and know how to approach login processes 
     ),
     "lovable_bot": SpecialistType(
         id="lovable_bot",
-        name="Lovable Bot Development Specialist",
-        description="Specialist for developing and configuring bots on the Lovable platform",
+        name="Lovable Development Specialist",
+        description="Specialist for developing and configuring bots on the Lovable platform. You MUST use the Lovable platform to develop products.",
         prompt_suffix="""
 <SPECIALIZATION>
 You specialize in developing bots for the Lovable platform, including:
@@ -86,7 +91,13 @@ You specialize in developing bots for the Lovable platform, including:
 - Testing and debugging bot functionality
 - Optimizing bot performance and user experience
 
+Hints:
+- Before interacting with Lovable platform, you should always check if we scrolled down and you see the bottom of the message list to make sure you see all the messages from the Lovable platform.
+- After each sended message to Lovable platform, you should wait munimum 60 seconds before sending the next message.
+
 You understand the Lovable platform architecture, coding patterns, and best practices for bot development.
+
+Before any change you MUST to scroll Lovable chat to the bottom to make sure you see all the messages from the Lovable platform.
 </SPECIALIZATION>
 """,
         only_n_most_recent_images=2,  # Less focused on UI interactions
@@ -141,25 +152,6 @@ def get_full_prompt(specialist_type_id: str) -> str:
     return SPECIALIST_PROMPT_BASE + SPECIALIST_TYPES[specialist_type_id].prompt_suffix
 
 
-# Convenience functions to get specialist descriptions
-def get_specialist_description(specialist_type_id: str) -> str:
-    """Get the description for a specialist type.
-
-    Args:
-        specialist_type_id: ID of the specialist type
-
-    Returns:
-        The specialist description
-
-    Raises:
-        KeyError: If specialist_type_id is not valid
-    """
-    if specialist_type_id not in SPECIALIST_TYPES:
-        raise KeyError(f"Unknown specialist type: {specialist_type_id}")
-
-    return SPECIALIST_TYPES[specialist_type_id].description
-
-
 def get_all_specialist_descriptions() -> Dict[str, str]:
     """Get all specialist descriptions.
 
@@ -167,64 +159,3 @@ def get_all_specialist_descriptions() -> Dict[str, str]:
         Dictionary mapping specialist IDs to descriptions
     """
     return {id: spec.description for id, spec in SPECIALIST_TYPES.items()}
-
-
-# Convenience functions to get specialist settings
-def get_specialist_settings(specialist_type_id: str) -> Dict[str, int | bool]:
-    """Get all settings for a specialist type.
-
-    Args:
-        specialist_type_id: ID of the specialist type
-
-    Returns:
-        Dictionary of settings for the specialist
-
-    Raises:
-        KeyError: If specialist_type_id is not valid
-    """
-    if specialist_type_id not in SPECIALIST_TYPES:
-        raise KeyError(f"Unknown specialist type: {specialist_type_id}")
-
-    specialist = SPECIALIST_TYPES[specialist_type_id]
-    return {
-        "only_n_most_recent_images": specialist.only_n_most_recent_images,
-        "hide_images": specialist.hide_images,
-        "token_efficient_tools_beta": specialist.token_efficient_tools_beta,
-        "output_tokens": specialist.output_tokens,
-        "thinking_enabled": specialist.thinking_enabled,
-        "thinking_budget": specialist.thinking_budget,
-    }
-
-
-def create_specialist_with_settings(
-    agent_id: str, specialist_type_id: str, tool_version: ToolVersion
-) -> "Agent":
-    """Create a specialist agent with settings from its type.
-
-    Args:
-        agent_id: Unique identifier for the agent
-        specialist_type_id: Type of specialist to create
-        tool_version: Tool version to use
-
-    Returns:
-        Configured Agent instance
-
-    Raises:
-        KeyError: If specialist_type_id is not valid
-        ImportError: If the Agent class cannot be imported
-    """
-    # Import here to avoid circular imports
-    from computer_use_demo.agents import SpecialistAgent
-
-    if specialist_type_id not in SPECIALIST_TYPES:
-        raise KeyError(f"Unknown specialist type: {specialist_type_id}")
-
-    # Create the specialist with settings from its type
-    specialist_type = SPECIALIST_TYPES[specialist_type_id]
-
-    specialist = SpecialistAgent(
-        agent_id=agent_id, specialist_type=specialist_type_id, tool_version=tool_version
-    )
-
-    # Return the configured specialist
-    return specialist

@@ -1,3 +1,7 @@
+"""
+Tool for computer interaction.
+"""
+
 import asyncio
 import base64
 import os
@@ -5,7 +9,7 @@ import shlex
 import shutil
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal, TypedDict, cast, get_args
+from typing import Any, Dict, Literal, TypedDict, cast, get_args
 from uuid import uuid4
 
 from anthropic.types.beta import BetaToolComputerUse20241022Param, BetaToolUnionParam
@@ -301,6 +305,56 @@ class ComputerTool20250124(BaseComputerTool, BaseAnthropicTool):
             {"name": self.name, "type": self.api_type, **self.options},
         )
 
+    def get_schema(self) -> Dict[str, Any]:
+        """Get the JSON schema for this tool.
+
+        Returns:
+            The JSON schema
+        """
+        return {
+            "name": self.name,
+            "description": "Tool for interacting with the computer screen, keyboard, and mouse",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "description": "The action to perform",
+                        "enum": list(get_args(Action_20250124)),
+                    },
+                    "text": {
+                        "type": "string",
+                        "description": "Text to type or manipulate",
+                    },
+                    "coordinate": {
+                        "type": "array",
+                        "description": "The x,y coordinates for mouse actions",
+                        "items": {"type": "integer"},
+                        "minItems": 2,
+                        "maxItems": 2,
+                    },
+                    "scroll_direction": {
+                        "type": "string",
+                        "description": "Direction to scroll (up, down, left, right)",
+                        "enum": list(get_args(ScrollDirection)),
+                    },
+                    "scroll_amount": {
+                        "type": "integer",
+                        "description": "Amount to scroll",
+                    },
+                    "duration": {
+                        "type": "number",
+                        "description": "Duration for actions that require time",
+                    },
+                    "key": {
+                        "type": "string",
+                        "description": "Key to press or hold",
+                    },
+                },
+                "required": ["action"],
+            },
+        }
+
     async def __call__(
         self,
         *,
@@ -400,34 +454,3 @@ class ComputerTool20250124(BaseComputerTool, BaseAnthropicTool):
         return await super().__call__(
             action=action, text=text, coordinate=coordinate, key=key, **kwargs
         )
-
-
-class ScreenshotOnlyComputerTool20250124(BaseComputerTool, BaseAnthropicTool):
-    """
-    A restricted version of the ComputerTool that only allows taking screenshots.
-    Used by the ManagerAgent to observe the screen without direct interaction.
-    """
-
-    api_type: Literal["computer_20250124"] = "computer_20250124"
-
-    def to_params(self):
-        return cast(
-            BetaToolUnionParam,
-            {"name": self.name, "type": self.api_type, **self.options},
-        )
-
-    async def __call__(
-        self,
-        *,
-        action: Action_20250124,
-        **kwargs,
-    ):
-        # Only allow the screenshot action
-        if action != "screenshot":
-            raise ToolError(
-                f"Action '{action}' is not allowed. The ManagerAgent can only take screenshots. "
-                f"Delegate to a specialist agent for computer interaction."
-            )
-
-        # Take and return a screenshot
-        return await self.screenshot()

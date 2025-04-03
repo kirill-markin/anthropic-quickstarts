@@ -1,66 +1,48 @@
 """
-Manager agent for multi-agent system.
+Manager agent for multi-agent system that coordinates specialists.
 """
 
-from typing import Any, Dict, List, Optional, cast
-
-from anthropic.types.beta import BetaMessageParam
+from typing import Any, Dict, Optional
 
 from computer_use_demo.agents.agent import SYSTEM_PROMPT, Agent
+from computer_use_demo.agents.logging import get_logger
 from computer_use_demo.history_tree import HistoryTree
-from computer_use_demo.interfaces import APIProvider, ToolVersion
-
-from .logging import get_logger
-from .specialist_types import SPECIALIST_TYPES
+from computer_use_demo.interfaces import ToolVersion
 
 # Get logger for this module
 logger = get_logger("computer_use_demo.agents.manager")
 
+# Additional instructions specifically for the manager agent
+MANAGER_PROMPT_SUFFIX = """
+<MANAGER_ROLE>
+You are the Manager Agent in a multi-agent system. Your role is to:
+1. Understand and decompose complex tasks
+2. Delegate specific subtasks to specialist agents
+3. Coordinate between multiple specialists
+4. Synthesize the results of specialists' work
+5. Maintain context and progress across the entire session
 
-# Build manager prompt from specialist types
-def _build_manager_prompt() -> str:
-    """Build the manager prompt using information from the specialist types."""
-    specialist_descriptions: List[str] = []
+You have access to specialist agents with different capabilities through the 'agent' tool.
+Each specialist has tools and knowledge for specific domains like web authentication, bot development, etc.
 
-    for type_id, specialist_type in SPECIALIST_TYPES.items():
-        specialist_descriptions.append(f"""
-{specialist_type.id}. {specialist_type.name} ("{type_id}")
-   - {specialist_type.description}
-""")
+IMPORTANT: You should ALWAYS delegate work to specialist agents whenever possible and minimize direct computer interactions. You should only perform tasks directly when:
+1. You need to understand a situation better to determine which specialist to delegate to
+2. You need to verify or check results from specialists
+3. The task is purely about coordinating between specialists
 
-    return f"""
-<AGENT_ROLE>
-You are the Manager Agent responsible for coordinating task execution in a multi-agent system.
-Your primary responsibilities are:
-1. Understand user requests and break them down into subtasks
-2. Delegate subtasks to specialized agents with appropriate expertise
-3. Synthesize results from specialized agents and provide cohesive responses
-4. Maintain a high-level view of the task progress
+When delegating tasks:
+- Be clear and specific about what each specialist should do
+- Break down complex tasks into smaller subtasks that can be delegated
+- Choose the most appropriate specialist based on their capabilities
+- Provide relevant context from previous interactions
+- Let specialists handle all direct computer interactions and tool usage
+- Focus on coordination and oversight rather than execution
 
-IMPORTANT: You can ONLY take screenshots of the screen, but CANNOT directly interact with the computer.
-For any mouse clicks, keyboard input, or other computer interactions, you MUST delegate to a specialist agent.
+Remember: Your primary role is strategic oversight and delegation. Avoid direct computer interaction whenever possible - use specialists for all hands-on work with tools and systems.
+</MANAGER_ROLE>
 
-You have access to the following specialized agents:
-
-{"".join(specialist_descriptions)}
-
-When receiving a user request:
-1. Analyze what needs to be done
-2. Choose the appropriate specialized agent for the task based on their expertise
-3. Provide the specialist with clear instructions and necessary context
-4. Present the final results to the user in a coherent manner
-
-Always delegate to the most appropriate specialist. For complex tasks that span multiple specialties,
-break them down into subtasks and delegate each to the most suitable specialist in sequence.
-
-Use the "agent" tool to delegate tasks to specialists. The output will be returned to you once
-the specialist completes their assigned task.
-</AGENT_ROLE>
+You are manager of this project. Please start.
 """
-
-
-# Manager-specific system prompt addition
-MANAGER_PROMPT_SUFFIX = _build_manager_prompt()
 
 # Default settings for the Manager Agent
 DEFAULT_MANAGER_SETTINGS = {
@@ -77,41 +59,83 @@ DEFAULT_MANAGER_SETTINGS = {
 
 
 class ManagerAgent(Agent):
-    """Manager agent that coordinates specialized agents."""
+    """Manager agent for multi-agent system."""
 
     def __init__(
         self,
+        history_tree: HistoryTree,
         agent_id: str = "manager",
-        system_prompt: str = SYSTEM_PROMPT,
+        system_prompt: str = SYSTEM_PROMPT + MANAGER_PROMPT_SUFFIX,
         tool_version: ToolVersion = "manager_only_20250124",
-        specialists: Optional[Dict[str, Agent]] = None,
         settings: Optional[Dict[str, Any]] = None,
-        history_tree: Optional[HistoryTree] = None,
     ) -> None:
-        """Initialize ManagerAgent with specialized agents.
+        """Initialize the manager agent.
 
         Args:
-            agent_id: Unique identifier for this agent
+            history_tree: History tree for tracking all interactions (required)
+            agent_id: Unique identifier for this agent (default: "manager")
             system_prompt: System prompt to use for this agent
-            tool_version: Tool version to use
-            specialists: Dictionary mapping specialist IDs to Agent instances
-            settings: Optional custom settings to override defaults
-            history_tree: Optional global history tree to track interactions
+            tool_version: Tool version to use (should be manager-only version)
+            settings: Optional settings dictionary
         """
-        # Add manager-specific suffix to system prompt
-        enhanced_prompt = f"{system_prompt}{MANAGER_PROMPT_SUFFIX}"
-        super().__init__(agent_id, enhanced_prompt, tool_version, history_tree)
+        super().__init__(agent_id, history_tree, system_prompt, tool_version)
+        self.settings = settings or {}
+        self.specialists: Dict[str, Agent] = {}
+        self.active_agent_id: str = agent_id
+        logger.debug(f"ManagerAgent initialized with {len(self.settings)} settings")
 
-        # Initialize specialists dictionary
-        self.specialists = specialists or {}
+    def get_active_agent(self) -> Agent:
+        """Get the currently active agent.
 
-        # Apply settings with defaults
-        self.settings = DEFAULT_MANAGER_SETTINGS.copy()
-        if settings:
-            self.settings.update(settings)
+        Returns:
+            The active agent (self or a specialist)
+        """
+        if self.active_agent_id == self.agent_id:
+            return self
+        return self.specialists[self.active_agent_id]
+
+    def set_active_agent(self, agent_id: str) -> None:
+        """Set the active agent by ID.
+
+        Args:
+            agent_id: ID of the agent to set as active
+
+        Raises:
+            ValueError: If agent_id is not valid
+        """
+        if agent_id == self.agent_id:
+            self.active_agent_id = agent_id
+            logger.debug(f"Set active agent to manager: {agent_id}")
+            return
+
+        if agent_id not in self.specialists:
+            raise ValueError(f"Agent {agent_id} not found in specialists")
+        self.active_agent_id = agent_id
+        logger.debug(f"Set active agent to specialist: {agent_id}")
+
+    async def handle_user_message(self, message: str) -> None:
+        """Handle a user message by forwarding it to the active agent.
+
+        Args:
+            message: The message from the user
+        """
+        logger.debug(
+            f"Handling user message through active agent: {self.active_agent_id}"
+        )
+
+        # Get the active agent
+        active_agent_id = self.active_agent_id
+        active_agent = self.get_active_agent()
+
+        # If we're the active agent, handle it directly
+        if active_agent_id == self.agent_id:
+            await super().handle_user_message(message)
+        else:
+            # Otherwise, forward to the specialist agent
+            await active_agent.handle_user_message(message)
 
         logger.debug(
-            f"ManagerAgent initialized with {len(self.specialists)} specialists"
+            f"Completed handling user message through agent: {active_agent_id}"
         )
 
     def register_specialist(self, specialist_id: str, specialist: Agent) -> None:
@@ -126,135 +150,13 @@ class ManagerAgent(Agent):
         if self.history_tree and not specialist.history_tree:
             specialist.history_tree = self.history_tree
 
-        logger.debug(f"Registered specialist '{specialist_id}' with manager")
+        # Устанавливаем ссылку на менеджера для специалиста
+        specialist.manager_agent = self
+        logger.debug(f"Set manager_agent reference for specialist '{specialist_id}'")
 
-    async def delegate_task(
-        self,
-        specialist_id: str,
-        task: str,
-        context: Optional[str] = None,
-        context_messages: Optional[List[BetaMessageParam]] = None,
-    ) -> Dict[str, Any]:
-        """Delegate a task to a specialist agent.
+        # Set this specialist as the active agent
+        self.set_active_agent(specialist_id)
 
-        Args:
-            specialist_id: ID of the specialist to delegate to
-            task: The task description to send to the specialist
-            context: Optional context string to provide to the specialist
-            context_messages: Optional context messages to provide to the specialist
-
-        Returns:
-            A dictionary with the session result information
-
-        Raises:
-            ValueError: If specialist_id is not registered
-        """
-        if specialist_id not in self.specialists:
-            error_msg = f"Specialist '{specialist_id}' not registered with manager"
-            logger.error(error_msg)
-            raise ValueError(error_msg)
-
-        specialist = self.specialists[specialist_id]
-        logger.debug(f"Delegating task to specialist '{specialist_id}': {task[:50]}...")
-
-        # Start specialist session in the history tree if available
-        session_id = None
-        if self.history_tree:
-            session_id = self.history_tree.start_specialist_session(
-                manager_id=self.agent_id,
-                specialist_id=specialist_id,
-                task=task,
-                context=context,
-            )
-            logger.debug(
-                f"Started specialist session in history tree, session_id={session_id}"
-            )
-
-        # Prepare the initial messages for the specialist with the task
-        initial_messages: List[BetaMessageParam] = []
-        if context_messages:
-            initial_messages.extend(context_messages)
-
-        # Add the task message
-        task_content = task
-        if context:
-            task_content = f"Context:\n{context}\n\nTask:\n{task}"
-
-        initial_messages.append(
-            {"role": "user", "content": [{"type": "text", "text": task_content}]}
+        logger.debug(
+            f"Registered specialist '{specialist_id}' with manager and set as active"
         )
-
-        # Reset specialist's history before delegation
-        specialist.history.messages = initial_messages
-
-        # Execute the specialist agent with appropriate settings
-        try:
-            # Run the specialist with inherited settings from the manager
-            # Use proper type casting to avoid type errors
-            result_messages = await specialist.run(
-                messages=specialist.history.messages,
-                model=str(self.settings.get("model", "")),
-                provider=cast(
-                    APIProvider, self.settings.get("provider", APIProvider.ANTHROPIC)
-                ),
-                system_prompt_suffix="",  # Specialist has its own prompt
-                api_key=str(self.settings.get("api_key", "")),
-                only_n_most_recent_images=int(
-                    self.settings.get("only_n_most_recent_images", 3)
-                ),
-                max_tokens=int(self.settings.get("output_tokens", 4096)),
-                thinking_budget=int(self.settings.get("thinking_budget", 2048))
-                if self.settings.get("thinking_enabled", False)
-                else None,
-                token_efficient_tools_beta=bool(
-                    self.settings.get("token_efficient_tools_beta", True)
-                ),
-            )
-
-            # Extract the final response
-            final_response = None
-            for msg in reversed(result_messages):
-                if msg["role"] == "assistant":
-                    final_response = msg
-                    break
-
-            success = True
-            result_data = {
-                "specialist_id": specialist_id,
-                "task": task,
-                "response": final_response,
-                "success": success,
-            }
-
-            # End the specialist session in the history tree if available
-            if self.history_tree and session_id:
-                self.history_tree.end_specialist_session(
-                    session_id=session_id, result=result_data, success=success
-                )
-                logger.debug(
-                    f"Ended specialist session in history tree, session_id={session_id}"
-                )
-
-            return result_data
-
-        except Exception as e:
-            logger.error(f"Error during specialist task execution: {str(e)}")
-
-            # End the specialist session with error in the history tree if available
-            if self.history_tree and session_id:
-                error_data = {
-                    "specialist_id": specialist_id,
-                    "task": task,
-                    "error": str(e),
-                    "success": False,
-                }
-
-                self.history_tree.end_specialist_session(
-                    session_id=session_id, result=error_data, success=False
-                )
-                logger.debug(
-                    f"Ended specialist session with error in history tree, session_id={session_id}"
-                )
-
-            # Re-raise the exception
-            raise

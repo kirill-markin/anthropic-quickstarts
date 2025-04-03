@@ -15,16 +15,11 @@ from typing import Any, Dict, cast, get_args
 
 import streamlit as st
 from anthropic import RateLimitError
-from anthropic.types.beta import (
-    BetaMessageParam,
-    BetaTextBlockParam,
-    BetaToolResultBlockParam,
-)
 
 from computer_use_demo.agents import ManagerAgent, get_logger, setup_logging
 from computer_use_demo.agents.agent import APIProvider
 from computer_use_demo.history_tree import HistoryTree
-from computer_use_demo.tools import ToolResult, ToolVersion
+from computer_use_demo.tools import ToolVersion
 
 # Logging setup
 log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
@@ -458,9 +453,9 @@ async def main():
     if not st.session_state.manager_agent:
         # Create a manager agent with manager_only tools and history tree
         st.session_state.manager_agent = ManagerAgent(
+            history_tree=st.session_state.history_tree,
             agent_id="manager",
             tool_version="manager_only_20250124",
-            history_tree=st.session_state.history_tree,
         )
         logger.debug("Created manager agent with history tree")
 
@@ -485,142 +480,138 @@ async def main():
 
     # Process new user message
     if new_message:
-        # First ensure all previous tool calls are properly closed
+        # Let the manager agent handle the message routing and tool interruption
         if st.session_state.manager_agent:
-            ensure_tool_calls_closed(st.session_state.manager_agent)
-
-        # Create a text block for the message
-        text_block = BetaTextBlockParam(type="text", text=new_message)
-
-        # Add message to the history tree
-        st.session_state.history_tree.add_user_message(
-            agent_id="user", content=[text_block]
-        )
-
-        # Check if there's an unclosed tool call in the manager's history
-        # This handles the case when a user sends a message while a tool is executing
-        needs_synthetic_tool_result = False
-        if (
-            st.session_state.manager_agent
-            and st.session_state.manager_agent.history.messages
-        ):
-            last_message = st.session_state.manager_agent.history.messages[-1]
-            if last_message.get("role") == "assistant" and last_message.get("content"):
-                for content_item in last_message.get("content", []):
-                    # Check if the last item is a tool_use without a following tool_result
-                    if (
-                        isinstance(content_item, dict)
-                        and content_item.get("type") == "tool_use"
-                    ):
-                        # We found an unclosed tool call
-                        needs_synthetic_tool_result = True
-                        logger.debug(
-                            f"Found unclosed tool call before user message: {content_item.get('id')}"
-                        )
-
-                        # Create a synthetic tool result message
-                        tool_id = content_item.get("id", "")
-                        tool_result = BetaToolResultBlockParam(
-                            type="tool_result",
-                            tool_use_id=tool_id,
-                            content=[{"type": "text", "text": INTERRUPT_TOOL_ERROR}],
-                        )
-
-                        # Add synthetic tool result to history
-                        interrupt_message = {"role": "user", "content": [tool_result]}
-                        st.session_state.manager_agent.history.append(
-                            cast(BetaMessageParam, interrupt_message)
-                        )
-
-                        # Create a ToolResult object for history tree
-                        interrupt_tool_result = ToolResult(
-                            output=f"{INTERRUPT_TEXT}",
-                            error=INTERRUPT_TOOL_ERROR,
-                            base64_image="",
-                        )
-
-                        # Add to history tree for display
-                        st.session_state.history_tree.add_tool_result(
-                            agent_id="user", tool_result=interrupt_tool_result
-                        )
-
-                        logger.debug(
-                            f"Added synthetic tool result for interrupted tool call: {tool_id}"
-                        )
-                        break
-
-        # Also add the message to the manager agent's history
-        user_message = {"role": "user", "content": [text_block]}
-        st.session_state.manager_agent.history.append(
-            cast(BetaMessageParam, user_message)
-        )
-        logger.debug(
-            f"Added user message to manager agent history: {new_message[:30]}..."
-        )
-
-        with track_sampling_loop():
-            try:
-                # Run the manager agent with the message
-                # The agent will use the shared history_tree automatically
-                await st.session_state.manager_agent.run(
-                    messages=st.session_state.manager_agent.history.messages,
-                    model=st.session_state.model,
-                    provider=cast(APIProvider, st.session_state.provider),
-                    system_prompt_suffix=st.session_state.custom_system_prompt,
-                    # Set callbacks to None - we use the history tree instead
-                    output_callback=None,
-                    tool_output_callback=None,
-                    api_response_callback=None,
-                    api_key=st.session_state.api_key,
-                    # Use settings
-                    only_n_most_recent_images=st.session_state.agent_settings[
-                        "only_n_most_recent_images"
-                    ],
-                    max_tokens=st.session_state.agent_settings["output_tokens"],
-                    thinking_budget=st.session_state.agent_settings["thinking_budget"]
-                    if st.session_state.agent_settings["thinking_enabled"]
-                    else None,
-                    token_efficient_tools_beta=st.session_state.agent_settings[
-                        "token_efficient_tools_beta"
-                    ],
-                )
-
-            except RateLimitError as e:
-                st.error(
-                    f"Claude API rate limit reached: {e.message if hasattr(e, 'message') else str(e)}"
-                )
-                _render_error(e)
-            except Exception as e:
-                st.error(f"Error: {e}")
-                _render_error(e)
-
-                # Add error to history tree for visibility
-                st.session_state.history_tree.add_system_message(
-                    text=f"⚠️ **Error occurred**: {str(e)}"
-                )
-
-                # Update UI immediately
-                update_ui()
-
-                # Log detailed error information
-                logger.error(f"Error during agent run: {str(e)}")
-                # Check for HTTP response details in a safe way
+            with track_sampling_loop():
                 try:
-                    if hasattr(e, "response"):
-                        response = e.response
-                        if hasattr(response, "text"):
-                            logger.error(f"API response: {response.text}")
-                        elif hasattr(response, "json") and callable(response.json):
-                            try:
-                                logger.error(f"API response JSON: {response.json()}")
-                            except Exception:
-                                pass
-                except Exception as log_error:
-                    logger.debug(
-                        f"Error while logging API response details: {log_error}"
+                    # This will handle tool interruption, adding message to history,
+                    # and routing to the appropriate agent
+                    await st.session_state.manager_agent.handle_user_message(
+                        new_message
                     )
 
-                logger.error(f"Error traceback: {traceback.format_exc()}")
+                    # Get the active agent after handling the message
+                    active_agent = st.session_state.manager_agent.get_active_agent()
+                    active_agent_id = st.session_state.manager_agent.active_agent_id
+
+                    logger.debug(
+                        f"Running active agent after message: {active_agent_id}"
+                    )
+
+                    # Запоминаем текущий ID активного агента перед запуском
+                    prev_active_agent_id = active_agent_id
+
+                    # Run the active agent with the message
+                    await active_agent.run(
+                        messages=active_agent.history.messages,
+                        model=st.session_state.model,
+                        provider=cast(APIProvider, st.session_state.provider),
+                        system_prompt_suffix=st.session_state.custom_system_prompt,
+                        # Set callbacks to None - we use the history tree instead
+                        output_callback=None,
+                        tool_output_callback=None,
+                        api_response_callback=None,
+                        api_key=st.session_state.api_key,
+                        # Use settings
+                        only_n_most_recent_images=st.session_state.agent_settings[
+                            "only_n_most_recent_images"
+                        ],
+                        max_tokens=st.session_state.agent_settings["output_tokens"],
+                        thinking_budget=st.session_state.agent_settings[
+                            "thinking_budget"
+                        ]
+                        if st.session_state.agent_settings["thinking_enabled"]
+                        else None,
+                        token_efficient_tools_beta=st.session_state.agent_settings[
+                            "token_efficient_tools_beta"
+                        ],
+                    )
+
+                    # Проверяем, изменился ли активный агент после выполнения
+                    # Это будет происходить, если специалист вызвал return_to_manager
+                    current_active_agent_id = (
+                        st.session_state.manager_agent.active_agent_id
+                    )
+
+                    if current_active_agent_id != prev_active_agent_id:
+                        logger.debug(
+                            f"Active agent changed from {prev_active_agent_id} to {current_active_agent_id}, automatically running new active agent"
+                        )
+
+                        # Получаем нового активного агента (теперь это менеджер)
+                        new_active_agent = (
+                            st.session_state.manager_agent.get_active_agent()
+                        )
+
+                        # Запускаем менеджера автоматически
+                        await new_active_agent.run(
+                            messages=new_active_agent.history.messages,
+                            model=st.session_state.model,
+                            provider=cast(APIProvider, st.session_state.provider),
+                            system_prompt_suffix=st.session_state.custom_system_prompt,
+                            # Set callbacks to None - we use the history tree instead
+                            output_callback=None,
+                            tool_output_callback=None,
+                            api_response_callback=None,
+                            api_key=st.session_state.api_key,
+                            # Use settings
+                            only_n_most_recent_images=st.session_state.agent_settings[
+                                "only_n_most_recent_images"
+                            ],
+                            max_tokens=st.session_state.agent_settings["output_tokens"],
+                            thinking_budget=st.session_state.agent_settings[
+                                "thinking_budget"
+                            ]
+                            if st.session_state.agent_settings["thinking_enabled"]
+                            else None,
+                            token_efficient_tools_beta=st.session_state.agent_settings[
+                                "token_efficient_tools_beta"
+                            ],
+                        )
+                        logger.debug(
+                            "Automatically ran manager agent after return_to_manager"
+                        )
+                except RateLimitError as e:
+                    st.error(
+                        f"Claude API rate limit reached: {e.message if hasattr(e, 'message') else str(e)}"
+                    )
+                    _render_error(e)
+                except Exception as e:
+                    st.error(f"Error: {e}")
+                    _render_error(e)
+
+                    # Add error to history tree for visibility
+                    st.session_state.history_tree.add_system_message(
+                        agent_id="manager",
+                        content=[
+                            {"type": "text", "text": f"⚠️ **Error occurred**: {str(e)}"}
+                        ],
+                    )
+
+                    # Update UI immediately
+                    update_ui()
+
+                    # Log detailed error information
+                    logger.error(f"Error during agent run: {str(e)}")
+                    # Check for HTTP response details in a safe way
+                    try:
+                        if hasattr(e, "response"):
+                            response = e.response
+                            if hasattr(response, "text"):
+                                logger.error(f"API response: {response.text}")
+                            elif hasattr(response, "json") and callable(response.json):
+                                try:
+                                    logger.error(
+                                        f"API response JSON: {response.json()}"
+                                    )
+                                except Exception:
+                                    pass
+                    except Exception as log_error:
+                        logger.debug(
+                            f"Error while logging API response details: {log_error}"
+                        )
+
+                    logger.error(f"Error traceback: {traceback.format_exc()}")
 
 
 @contextmanager
@@ -728,6 +719,7 @@ def _render_node(node_data: Dict[str, Any]):
     # Handle different node types
     if node_type == "user_message":
         with st.chat_message("user"):
+            # Process content consistently with assistant_message
             for content_item in node_data.get("content", []):
                 if (
                     isinstance(content_item, dict)
@@ -745,12 +737,22 @@ def _render_node(node_data: Dict[str, Any]):
                 # Show specialist identifier (e.g., "general_1234567890")
                 st.caption(f"Specialist: {agent_id}")
 
+            # Сначала отобразим основной контент
             for content_item in node_data.get("content", []):
                 if (
                     isinstance(content_item, dict)
                     and content_item.get("type") == "text"
                 ):
                     st.markdown(content_item.get("text", ""))
+
+            # Проверяем, есть ли thinking в данном узле
+            if node_data.get("has_thinking_content") and node_data.get("thinking"):
+                # Отображаем thinking в отдельном expandable блоке
+                with st.expander("Show Thinking"):
+                    st.markdown(f"```\n{node_data.get('thinking', '')}\n```")
+
+                # Добавляем индикатор, что сообщение содержит thinking
+                st.caption("💭 This message includes thinking")
 
     elif node_type == "tool_call":
         tool_name = node_data.get("tool_name", "")
@@ -855,7 +857,12 @@ def _render_node(node_data: Dict[str, Any]):
 
     elif node_type == "system_message":
         with st.chat_message("system"):
-            st.markdown(node_data.get("text", ""))
+            for content_item in node_data.get("content", []):
+                if (
+                    isinstance(content_item, dict)
+                    and content_item.get("type") == "text"
+                ):
+                    st.markdown(content_item.get("text", ""))
 
     # For other node types, just render a debug representation
     else:
@@ -876,93 +883,6 @@ def _update_agent_tool_version():
         logger.debug(
             f"Updated agent tool_version from {old_version} to {st.session_state.tool_versions}"
         )
-
-
-def ensure_tool_calls_closed(manager_agent):
-    """Check for unclosed tool calls and add synthetic tool results.
-
-    Args:
-        manager_agent: The manager agent instance to check
-
-    Returns:
-        bool: Whether any unclosed tool calls were detected and fixed
-    """
-    if not manager_agent or not manager_agent.history.messages:
-        return False
-
-    fixed_any = False
-    messages = manager_agent.history.messages
-
-    # Scan each pair of messages for unclosed tool calls
-    for i in range(len(messages) - 1):
-        current_msg = messages[i]
-        next_msg = messages[i + 1]
-
-        # Only check assistant messages (which contain tool calls)
-        if current_msg.get("role") != "assistant":
-            continue
-
-        # Look for tool_use blocks
-        tool_use_ids = []
-        for content_item in current_msg.get("content", []):
-            if (
-                isinstance(content_item, dict)
-                and content_item.get("type") == "tool_use"
-            ):
-                tool_use_ids.append(content_item.get("id", ""))
-
-        # If no tool uses in this message, continue
-        if not tool_use_ids:
-            continue
-
-        # Check if the next message is a user message with tool_result blocks
-        if next_msg.get("role") != "user":
-            # This is a protocol violation - tool_use must be followed by user message with tool_result
-            continue
-
-        # Check which tool_use IDs have corresponding tool_result blocks
-        found_tool_results = set()
-        for content_item in next_msg.get("content", []):
-            if (
-                isinstance(content_item, dict)
-                and content_item.get("type") == "tool_result"
-            ):
-                found_tool_results.add(content_item.get("tool_use_id", ""))
-
-        # Find missing tool results
-        missing_tool_ids = [id for id in tool_use_ids if id not in found_tool_results]
-
-        # Add synthetic tool results for any missing ones
-        if missing_tool_ids:
-            logger.debug(
-                f"Found {len(missing_tool_ids)} unclosed tool calls: {missing_tool_ids}"
-            )
-
-            # Create tool results for each missing ID
-            new_tool_results = []
-            for tool_id in missing_tool_ids:
-                tool_result = BetaToolResultBlockParam(
-                    type="tool_result",
-                    tool_use_id=tool_id,
-                    content=[{"type": "text", "text": INTERRUPT_TOOL_ERROR}],
-                )
-                new_tool_results.append(tool_result)
-
-                # Also add to history tree for display
-                manager_agent.history_tree.add_tool_result(
-                    agent_id="user",
-                    tool_result=ToolResult(
-                        output=INTERRUPT_TEXT,
-                        error=INTERRUPT_TOOL_ERROR,
-                        base64_image="",
-                    ),
-                )
-
-            # Add all new tool results to the next message content
-            next_msg["content"] = new_tool_results + next_msg["content"]
-            fixed_any = True
-
-    return fixed_any
 
 
 if __name__ == "__main__":

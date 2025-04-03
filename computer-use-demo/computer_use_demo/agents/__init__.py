@@ -10,7 +10,6 @@ from .specialist import SpecialistAgent
 from .specialist_types import (
     SPECIALIST_TYPES,
     get_full_prompt,
-    get_specialist_description,
 )
 
 __all__ = [
@@ -22,5 +21,4 @@ __all__ = [
     "SpecialistAgent",
     "SPECIALIST_TYPES",
     "get_full_prompt",
-    "get_specialist_description",
 ]

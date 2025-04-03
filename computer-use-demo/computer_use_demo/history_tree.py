@@ -17,6 +17,7 @@ from anthropic.types.beta import (
 )
 from pydantic import BaseModel, ConfigDict, Field
 
+from computer_use_demo.agents.logging import get_logger
 from computer_use_demo.tools import ToolResult
 
 
@@ -128,7 +129,7 @@ class HistoryNode(BaseModel):
 
     def to_ui_dict(self) -> Dict[str, Any]:
         """Convert node to a dictionary suitable for UI rendering."""
-        ui_dict = {
+        ui_dict: Dict[str, Any] = {
             "id": self.node_id,
             "type": self.node_type.value,
             "timestamp": self.timestamp.isoformat(),
@@ -139,10 +140,23 @@ class HistoryNode(BaseModel):
             ui_dict["role"] = self.role
 
         if self.node_type == NodeType.USER_MESSAGE:
-            ui_dict["content"] = self.message_content
+            # Use consistent array format for content like assistant messages
+            ui_dict["content"] = []
+            for content_item in self.message_content:
+                if isinstance(content_item, dict):
+                    ui_dict["content"].append(content_item)
 
         elif self.node_type == NodeType.ASSISTANT_MESSAGE:
-            ui_dict["content"] = self.message_content
+            # Always add agent type caption to clearly identify the sender
+            ui_dict["content"] = []
+            for content_item in self.message_content:
+                if isinstance(content_item, dict):
+                    ui_dict["content"].append(content_item)
+
+            # Если есть thinking_content, добавляем его в ответ для отображения в UI
+            if self.thinking_content:
+                ui_dict["has_thinking_content"] = True
+                ui_dict["thinking"] = self.thinking_content
 
         elif self.node_type == NodeType.SYSTEM_MESSAGE:
             ui_dict["content"] = self.message_content
@@ -270,14 +284,68 @@ class HistoryTree:
         self,
         agent_id: str,
         content: List[BetaContentBlockParam],
+        thinking_content: Optional[str] = None,
         parent_id: Optional[str] = None,
     ) -> str:
-        """Add an assistant message node."""
+        """Add an assistant message node.
+
+        Args:
+            agent_id: ID of the agent that produced the message
+            content: Content blocks of the message (without thinking blocks)
+            thinking_content: Optional thinking content that will be stored in the same node
+            parent_id: Optional parent node ID
+
+        Returns:
+            ID of the created node
+        """
+        # Add debugging
+        logger = get_logger("computer_use_demo.history_tree")
+        logger.debug(f"Adding assistant message for agent {agent_id}")
+        logger.debug(f"Content: {content and len(content)}")
+        logger.debug(f"Has thinking content: {thinking_content is not None}")
+
+        # Ensure content is not empty
+        if not content:
+            content = [{"type": "text", "text": "No response content"}]
+            logger.warning(
+                f"Empty assistant message content detected for agent {agent_id}, using placeholder"
+            )
+        else:
+            # Filter out thinking blocks and other invalid blocks
+            valid_blocks = []
+            for block in content:
+                block_type = block.get("type", "")
+
+                # Skip thinking blocks - they should be handled by the thinking_content parameter
+                if block_type == "thinking":
+                    logger.debug(f"Skipping thinking block for agent {agent_id}")
+                    continue
+
+                # Check for and remove empty text blocks that could cause API errors
+                if block_type == "text" and not block.get("text", "").strip():
+                    logger.warning(
+                        f"Empty text block detected in assistant message for agent {agent_id}, skipping"
+                    )
+                    continue
+
+                # Add valid blocks
+                valid_blocks.append(block)
+
+            # If all blocks were invalid, add a placeholder
+            if not valid_blocks:
+                valid_blocks = [{"type": "text", "text": "No response content"}]
+                logger.warning(
+                    f"All content blocks were invalid/filtered in assistant message for agent {agent_id}, using placeholder"
+                )
+
+            content = valid_blocks
+
         node = HistoryNode(
             node_type=NodeType.ASSISTANT_MESSAGE,
             message_content=content,
             agent_id=agent_id,
             role="assistant",
+            thinking_content=thinking_content,  # Store thinking in the same node
         )
         return self.add_node(node, parent_id or self.current_context_id)
 

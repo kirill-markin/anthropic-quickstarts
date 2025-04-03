@@ -10,7 +10,10 @@ from typing import Any, Dict, List, Literal, Optional, Protocol, TypeAlias
 
 # Define ToolVersion as a TypeAlias for compatibility with literal strings
 ToolVersion: TypeAlias = Literal[
-    "computer_use_20250124", "computer_use_20241022", "manager_only_20250124"
+    "computer_use_20250124",
+    "computer_use_20241022",
+    "manager_only_20250124",
+    "specialist_only_20250124",
 ]
 
 

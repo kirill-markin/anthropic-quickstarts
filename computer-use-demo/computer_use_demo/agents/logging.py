@@ -72,6 +72,14 @@ def setup_logging(log_level: str = "INFO") -> logging.Logger:
     streamlit_logger = logging.getLogger("computer_use_demo.streamlit")
     streamlit_logger.setLevel(getattr(logging, log_level))
 
+    # Отключаем детальное логирование HTTP-клиентов, чтобы избежать
+    # проблем с рекурсивными вызовами при закрытии сессий
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    logging.getLogger("requests").setLevel(logging.WARNING)
+    logging.getLogger("anthropic").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
     # Log startup information
     root_logger.debug("===========================================")
     root_logger.debug(f"Logging initialized at {timestamp} UTC")
