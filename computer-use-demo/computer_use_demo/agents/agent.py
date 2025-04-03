@@ -36,6 +36,7 @@ from .logging import get_logger
 logger = get_logger("computer_use_demo.agents.agent")
 
 PROMPT_CACHING_BETA_FLAG = "prompt-caching-2024-07-31"
+MAX_SPECIALIST_CYCLES = 100
 
 
 # This system prompt is optimized for the Docker environment in this repository and
@@ -70,25 +71,24 @@ def response_to_params(
 
     # First, separate thinking blocks from other blocks
     for block in response.content:
-        if isinstance(block, BetaTextBlock):
-            if block.text and block.text.strip():
-                other_blocks.append(
-                    cast(
-                        BetaContentBlockParam,
-                        BetaTextBlockParam(type="text", text=block.text),
-                    )
+        if getattr(block, "type", None) == "thinking":
+            # Handle thinking blocks - preserve them exactly as received from the API
+            # We must not modify or create thinking blocks as they contain cryptographic signatures
+            thinking_block = cast(BetaContentBlockParam, block.model_dump())
+            thinking_blocks.append(thinking_block)
+        elif isinstance(block, BetaTextBlock) and block.text and block.text.strip():
+            other_blocks.append(
+                cast(
+                    BetaContentBlockParam,
+                    BetaTextBlockParam(type="text", text=block.text),
                 )
-            elif getattr(block, "type", None) == "thinking":
-                # Handle thinking blocks - preserve them exactly as received from the API
-                # We must not modify or create thinking blocks as they contain cryptographic signatures
-                thinking_block = cast(BetaContentBlockParam, block.model_dump())
-                thinking_blocks.append(thinking_block)
+            )
         else:
             # Handle tool use blocks normally
             other_blocks.append(
                 cast(
                     BetaContentBlockParam,
-                    cast(BetaToolUseBlockParam, block.model_dump()),
+                    block.model_dump(),
                 )
             )
 
@@ -410,6 +410,13 @@ class Agent:
             f"Agent '{self.agent_id}' reset interrupt flag and set running state"
         )
 
+        # Initialize a counter for loop cycles (for specialists to return to manager)
+        loop_counter = 0
+        is_specialist = self.agent_id != "manager"
+        logger.debug(
+            f"Agent '{self.agent_id}' is_specialist={is_specialist}, initializing loop_counter=0"
+        )
+
         # Always ensure history is in a consistent state before proceeding
         self._ensure_history_consistency()
 
@@ -587,6 +594,40 @@ class Agent:
 
         # Main loop
         while True:
+            # Increment loop counter for specialists
+            if is_specialist:
+                loop_counter += 1
+                # Check if we've reached the cycle limit (50)
+                if loop_counter >= MAX_SPECIALIST_CYCLES:
+                    logger.debug(
+                        f"Specialist '{self.agent_id}' reached {loop_counter} cycles, adding message to return to manager"
+                    )
+
+                    # Create an assistant message to return to manager
+                    text_block = BetaTextBlockParam(
+                        type="text",
+                        text="Reached maximum cycle count (50). Return to manager with current results and overview of the message history.",
+                    )
+
+                    # Add the message to agent's history
+                    self.history.messages.append(
+                        {"role": "user", "content": [text_block]}
+                    )
+
+                    # Add to history tree if available
+                    if self.history_tree:
+                        self.history_tree.add_user_message(
+                            agent_id=self.agent_id, content=[text_block]
+                        )
+
+                    # Reset counter so we don't keep triggering this
+                    logger.debug(
+                        f"Specialist '{self.agent_id}' reset loop counter after adding return message"
+                    )
+
+                    # Continue with the loop - the agent will naturally call return_to_manager
+                    # on the next iteration as a response to this message
+
             # Проверяем флаг прерывания в начале каждой итерации цикла
             if self.is_interrupted:
                 logger.debug(

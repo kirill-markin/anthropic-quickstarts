@@ -8,6 +8,7 @@ from anthropic.types.beta import (
     BetaMessageParam,
     BetaToolResultBlockParam,
 )
+from pydantic import BaseModel
 
 from .logging import get_logger
 
@@ -15,8 +16,10 @@ from .logging import get_logger
 logger = get_logger("computer_use_demo.agents.history")
 
 
-class History:
+class History(BaseModel):
     """Class for managing agent conversation history."""
+
+    messages: List[BetaMessageParam] = []
 
     def __init__(self, messages: Optional[List[BetaMessageParam]] = None) -> None:
         """Initialize History with optional existing messages.
@@ -24,7 +27,7 @@ class History:
         Args:
             messages: Optional list of existing messages to initialize history with
         """
-        self.messages: List[BetaMessageParam] = messages or []
+        super().__init__(messages=messages or [])
         logger.debug(f"History initialized with {len(self.messages)} messages")
 
     def append(self, message: BetaMessageParam) -> None:
