@@ -10,6 +10,7 @@ from .bash import BashTool20241022, BashTool20250124
 from .computer import (
     ComputerTool20241022,
     ComputerTool20250124,
+    ReadOnlyComputerTool20250124,
 )
 from .edit import EditTool20241022, EditTool20250124
 
@@ -52,7 +53,7 @@ TOOL_GROUPS: list[ToolGroup] = [
     ToolGroup(
         version="manager_only_20250124",
         tools=[
-            ComputerTool20250124,
+            ReadOnlyComputerTool20250124,
             EditTool20250124,
             AgentTool20250124,
         ],

@@ -454,3 +454,82 @@ class ComputerTool20250124(BaseComputerTool, BaseAnthropicTool):
         return await super().__call__(
             action=action, text=text, coordinate=coordinate, key=key, **kwargs
         )
+
+
+class ReadOnlyComputerTool20250124(ComputerTool20250124):
+    """
+    A restricted version of ComputerTool that only allows taking screenshots.
+    All other computer interaction methods (clicks, typing, etc.) are disabled.
+    """
+
+    async def __call__(
+        self,
+        *,
+        action: Action_20250124,
+        text: str | None = None,
+        coordinate: tuple[int, int] | None = None,
+        scroll_direction: ScrollDirection | None = None,
+        scroll_amount: int | None = None,
+        duration: int | float | None = None,
+        key: str | None = None,
+        **kwargs,
+    ):
+        # Only allow screenshot and cursor_position actions
+        allowed_actions = ["screenshot"]
+        if action not in allowed_actions:
+            return ToolResult(
+                output="",
+                error=f"Action '{action}' is not allowed for manager agent. Please delegate this task to a specialist agent.",
+                base64_image="",
+            )
+
+        # For allowed actions, call the parent method
+        return await super().__call__(
+            action=action,
+            text=text,
+            coordinate=coordinate,
+            scroll_direction=scroll_direction,
+            scroll_amount=scroll_amount,
+            duration=duration,
+            key=key,
+            **kwargs,
+        )
+
+    def get_schema(self) -> Dict[str, Any]:
+        """Get the JSON schema for this tool with restricted actions.
+
+        Returns:
+            The JSON schema with only allowed actions
+        """
+        # Get the base schema from parent class
+        schema = super().get_schema()
+
+        # Modify the schema to only include screenshot action
+        allowed_actions = ["screenshot"]
+
+        # Update the description to clarify this is a restricted version
+        schema["description"] = (
+            "Tool for viewing the computer screen (screenshots only). Cannot interact with screen."
+        )
+
+        # Update the action enum to only include allowed actions
+        schema["input_schema"]["properties"]["action"]["enum"] = allowed_actions
+        schema["input_schema"]["properties"]["action"]["description"] = (
+            "The action to perform (only screenshot is allowed)"
+        )
+
+        # Add a note about restrictions
+        for param in [
+            "text",
+            "coordinate",
+            "scroll_direction",
+            "scroll_amount",
+            "duration",
+            "key",
+        ]:
+            if param in schema["input_schema"]["properties"]:
+                schema["input_schema"]["properties"][param]["description"] += (
+                    " (Not used for manager agent)"
+                )
+
+        return schema
